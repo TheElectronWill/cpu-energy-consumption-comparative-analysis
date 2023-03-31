@@ -1,15 +1,15 @@
 [package]
-name = "aya-start-ebpf"
+name = "ebpf"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
 aya-bpf = { git = "https://github.com/aya-rs/aya", branch = "main" }
 aya-log-ebpf = { git = "https://github.com/aya-rs/aya", branch = "main" }
-aya-start-common = { path = "../aya-start-common" }
+common = { path = "../common" }
 
 [[bin]]
-name = "aya-start"
+name = "ebpf"
 path = "src/main.rs"
 
 [profile.dev]
@@ -30,3 +30,6 @@ codegen-units = 1
 
 [workspace]
 members = []
+
+[patch."https://github.com/aya-rs/aya"]
+aya-bpf = { path = "/home/guillaume/Documents/Travaux/Mesure conso appli/aya/bpf/aya-bpf" }

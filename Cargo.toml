@@ -1,2 +1,6 @@
 [workspace]
-members = ["aya-start", "aya-start-common", "xtask"]
+members = ["userspace", "common", "xtask"]
+
+[patch.crates-io]
+aya = { path = "/home/guillaume/Documents/Travaux/Mesure conso appli/aya/aya" }
+aya-log = { path = "/home/guillaume/Documents/Travaux/Mesure conso appli/aya/aya-log" }
