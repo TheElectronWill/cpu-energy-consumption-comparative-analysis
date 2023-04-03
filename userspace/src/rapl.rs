@@ -40,6 +40,7 @@ impl PowerEvent {
         let mut attr = sys::bindings::perf_event_attr::default();
         attr.config = self.code.into();
         attr.type_ = pmu_type;
+        dbg!(attr);
 
         let result = unsafe { sys::perf_event_open(&mut attr, pid, cpu, -1, 0) };
         if result == -1 {

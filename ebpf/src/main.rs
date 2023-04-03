@@ -2,13 +2,13 @@
 #![no_main]
 
 use aya_bpf::{
-    helpers::{bpf_get_smp_processor_id, bpf_perf_event_read},
+    helpers::bpf_get_smp_processor_id,
     macros::{map, perf_event},
-    maps::{PerfEventArray, Array},
+    maps::PerfEventArray,
     programs::PerfEventContext,
-    BpfContext, cty::c_void,
+    BpfContext,
 };
-use aya_log_ebpf::{info, error};
+use aya_log_ebpf::{error, info};
 
 // TODO: this needs to be a bpf map of type BPF_MAP_TYPE_PERF_EVENT_ARRAY, otherwise
 // we cannot call bpf_perf_event_read on it.
@@ -26,7 +26,7 @@ pub fn aya_start(ctx: PerfEventContext) -> i32 {
         Err(ret) => {
             error!(&ctx, "ebpf program failed with error {}", ret);
             1
-        },
+        }
     }
 }
 
@@ -43,21 +43,15 @@ fn try_aya_start(ctx: &PerfEventContext) -> Result<i32, i64> {
         ),
     }
     // read PMU data from file descriptor in the array, by cpu id
-    let key = cpu.into();
-    let value = unsafe { DESCRIPTORS.read_at_index(key)? };
+    let value = unsafe { DESCRIPTORS.read_at_index(cpu)? };
 
     info!(ctx, "got value {} at cpu {}", value.counter, cpu);
 
     // push the update to userspace, using bpf_perf_event_output (wrapped) with
     // BPF_F_CURRENT_CPU as a flag (done by output_current_cpu).
-    //unsafe { EVENTS.output_current_cpu(ctx, &value.counter) };
+    unsafe { EVENTS.output_at_index(ctx, &value.counter, cpu) };
 
     Ok(0)
-}
-
-/// Converts a mutable reference to a C pointer `*void`.
-fn as_void_ptr<T>(t: &mut T) -> *mut c_void {
-    return t as *mut _ as *mut c_void
 }
 
 /// Makes the compiler happy, but is never used (eBPF programs cannot panic).

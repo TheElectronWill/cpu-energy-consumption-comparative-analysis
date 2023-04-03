@@ -32,4 +32,4 @@ codegen-units = 1
 members = []
 
 [patch."https://github.com/aya-rs/aya"]
-aya-bpf = { path = "/home/guillaume/Documents/Travaux/Mesure conso appli/aya/bpf/aya-bpf" }
+aya-bpf = { path = "../../aya/bpf/aya-bpf" }
