@@ -8,7 +8,7 @@ use std::{fs, num::ParseIntError, path::Path};
 
 #[derive(Debug)]
 pub struct PowerEvent {
-    /// The name of the power event. This corresponds to a RAPL **domain name**.
+    /// The name of the power event. This corresponds to a RAPL **domain name**, like "pkg".
     pub name: String,
     /// The event code to use as a "config" field for perf_event_open
     pub code: u8,
@@ -40,6 +40,7 @@ impl PowerEvent {
         let mut attr = sys::bindings::perf_event_attr::default();
         attr.config = self.code.into();
         attr.type_ = pmu_type;
+        attr.size = core::mem::size_of_val(&attr) as u32;
         dbg!(attr);
 
         let result = unsafe { sys::perf_event_open(&mut attr, pid, cpu, -1, 0) };

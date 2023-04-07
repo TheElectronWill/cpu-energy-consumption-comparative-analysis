@@ -11,6 +11,7 @@ use aya_log::BpfLogger;
 use log::{info, warn};
 
 mod rapl;
+mod powercap;
 
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
@@ -35,13 +36,15 @@ async fn main() -> Result<(), anyhow::Error> {
     let pmu_type = dbg!(rapl::pmu_type()).context("failed to get pmu type")?;
 
     // Call perf_event_open for each event and each cpu, and populate the array with the file descriptors
+    // NB: the AMD node we have only supports the "pkg" domain event, so we only use this one.
+    // A bug in the Linux kernel makes all events available in the sysfs (so in our `rapl_events`),
+    // see https://github.com/torvalds/linux/commit/0036fb00a756a2f6e360d44e2e3d2200a8afbc9b.
+    let pkg_event = rapl_events.iter().find(|e| e.name == "pkg").context("no pkg event")?;
     for cpu in &socket_cpus {
-        for evt in &rapl_events {
-            println!("Opening {evt:?} on cpu {cpu}");
-            let fd = evt.perf_event_open(pmu_type, PerfEventScope::AllProcessesOneCpu { cpu: *cpu })?;
-            // use the cpu id as the index
-            fd_array.set(*cpu, fd)?;
-        }
+        println!("Opening {pkg_event:?} on cpu {cpu}");
+        let fd = pkg_event.perf_event_open(pmu_type, PerfEventScope::AllProcessesOneCpu { cpu: *cpu })?;
+        // use the cpu id as the index
+        fd_array.set(*cpu, fd)?;
     }
 
     // Find the eBPF program named "aya_start", as a `PerfEvent` program
@@ -97,3 +100,5 @@ fn load_ebpf_code() -> Result<Bpf, BpfError> {
 
     Bpf::load(ebpf_bytecode)
 }
+
+// TODO monitor more than just the pkg

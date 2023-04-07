@@ -3,6 +3,7 @@
 
 use aya_bpf::{
     helpers::bpf_get_smp_processor_id,
+    helpers::bpf_get_numa_node_id,
     macros::{map, perf_event},
     maps::PerfEventArray,
     programs::PerfEventContext,
@@ -10,14 +11,11 @@ use aya_bpf::{
 };
 use aya_log_ebpf::{error, info};
 
-// TODO: this needs to be a bpf map of type BPF_MAP_TYPE_PERF_EVENT_ARRAY, otherwise
-// we cannot call bpf_perf_event_read on it.
-// But! aya's PerfEventArray doesn't provide the `set` method, only `Array` provides it...
 #[map]
-static mut DESCRIPTORS: PerfEventArray<i32> = PerfEventArray::with_max_entries(32, 0);
+static mut DESCRIPTORS: PerfEventArray<i32> = PerfEventArray::with_max_entries(64, 0);
 
 #[map]
-static mut EVENTS: PerfEventArray<u64> = PerfEventArray::with_max_entries(32, 0);
+static mut EVENTS: PerfEventArray<u64> = PerfEventArray::with_max_entries(64, 0);
 
 #[perf_event]
 pub fn aya_start(ctx: PerfEventContext) -> i32 {
