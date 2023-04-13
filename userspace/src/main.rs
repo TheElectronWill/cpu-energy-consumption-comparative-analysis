@@ -1,104 +1,133 @@
-use std::time::Duration;
+use std::{
+    process::Command,
+    time::Duration,
+};
 
 use anyhow::Context;
-use aya::maps::perf::PerfEventArrayBuffer;
-use aya::maps::perf::bytes::BytesMut;
-use aya::maps::PerfEventArray;
-use aya::programs::{perf_event, PerfEvent, PerfEventScope};
-use aya::{include_bytes_aligned, Bpf, BpfError};
-use aya_log::BpfLogger;
+use aya::util::online_cpus;
+use clap::{Parser, ValueEnum};
+use log::debug;
+use userspace::probes::{ebpf, perf_rapl, powercap, Probe};
 
-use log::{info, warn};
+#[derive(Parser)]
+#[command(author, version)]
+struct Cli {
+    #[arg(value_enum)]
+    probe: ProbeType,
 
-mod rapl;
-mod powercap;
+    /// Measurement frequency, in Hertz
+    #[arg(short, long)]
+    frequency: u64,
 
-#[tokio::main]
+    /// Number of sysbench "events" to compute.
+    #[arg(short, long)]
+    n_events: u64,
+}
+
+#[derive(Clone, ValueEnum)]
+enum ProbeType {
+    PowercapSysfs,
+    PerfEvent,
+    Ebpf,
+    None,
+}
+
+// A tokio runtime is required for aya ebpf
+#[tokio::main(worker_threads = 1)]
 async fn main() -> Result<(), anyhow::Error> {
     env_logger::init();
+    let cli = Cli::parse();
 
-    let mut bpf = load_ebpf_code()?;
-    println!("ebpf code loaded");
+    let rapl_events = perf_rapl::all_power_events()?;
+    let socket_cpus = perf_rapl::cpus_to_monitor()?;
+    let power_zones = powercap::all_power_zones()?;
 
-    if let Err(e) = BpfLogger::init(&mut bpf) {
-        // This can happen if you remove all log statements from your eBPF program.
-        warn!("failed to initialize eBPF logger: {}", e);
+    for evt in &rapl_events {
+        println!("Found RAPL perf_event {evt:?}");
     }
-
-    // Get a reference to the DESCRIPTORS map
-    let mut events_array = PerfEventArray::try_from(bpf.take_map("EVENTS").expect("map not found: EVENTS"))?;
-    let mut fd_array = PerfEventArray::try_from(bpf.take_map("DESCRIPTORS").expect("map not found: DESCRIPTORS"))?;
-    println!("ebpf maps found");
-
-    // Find the values for perf_event_open
-    let rapl_events = dbg!(rapl::all_power_events()).context("failed to get power events")?;
-    let socket_cpus = dbg!(rapl::cpus_to_monitor()).context("failed to get socket cpus")?;
-    let pmu_type = dbg!(rapl::pmu_type()).context("failed to get pmu type")?;
-
-    // Call perf_event_open for each event and each cpu, and populate the array with the file descriptors
-    // NB: the AMD node we have only supports the "pkg" domain event, so we only use this one.
-    // A bug in the Linux kernel makes all events available in the sysfs (so in our `rapl_events`),
-    // see https://github.com/torvalds/linux/commit/0036fb00a756a2f6e360d44e2e3d2200a8afbc9b.
-    let pkg_event = rapl_events.iter().find(|e| e.name == "pkg").context("no pkg event")?;
-    for cpu in &socket_cpus {
-        println!("Opening {pkg_event:?} on cpu {cpu}");
-        let fd = pkg_event.perf_event_open(pmu_type, PerfEventScope::AllProcessesOneCpu { cpu: *cpu })?;
-        // use the cpu id as the index
-        fd_array.set(*cpu, fd)?;
+    println!("Found powercap zones:");
+    for zone in &power_zones {
+        println!("{zone}");
     }
+    let n = socket_cpus.len();
+    println!("{n} monitorable CPU (cores) found: {socket_cpus:?}");
 
-    // Find the eBPF program named "aya_start", as a `PerfEvent` program
-    let program: &mut PerfEvent = bpf.program_mut("aya_start").unwrap().try_into()?;
-
-    // Load the program: inject its instructions into the kernel
-    program.load()?;
-    println!("ebpf program loaded");
-
-    // Attach the program to the hooks in the kernel, in order to be triggered when some events occur
-    // The signature of the `attach` method depends on the type of the program, here it's a `PerfEvent`.
-    for cpu in &socket_cpus {
-        // This will raise scheduled events on each CPU at 1 HZ, triggered by the kernel based on clock ticks.
-        program.attach(
-            perf_event::PerfTypeId::Software,
-            perf_event::perf_sw_ids::PERF_COUNT_SW_CPU_CLOCK as u64,
-            perf_event::PerfEventScope::AllProcessesOneCpu { cpu: *cpu },
-            perf_event::SamplePolicy::Frequency(1),
-        )?;
-    }
-
-    // Continuously poll the data from the event buffer
-    println!("Polling the data...");
-    let mut opened: Vec<PerfEventArrayBuffer<_>> = socket_cpus.iter().map(|cpu| events_array.open(cpu.clone(), None).expect("failed to open event array")).collect();
-    let mut out_bufs = [BytesMut::new()];
-    loop {
-        for (cpu, receive_buf) in opened.iter_mut().enumerate() {
-            // read data from the perf_event array
-            if receive_buf.readable() {
-                let res = receive_buf.read_events(&mut out_bufs).expect("failed to poll events");
-                let data = &out_bufs[0];
-                let len = data.len();
-                info!("polled {res:?} = {data:x} (len {len})");
-                let counter = u64::from_ne_bytes(data[..8].try_into()?);
-                info!("counter = {counter} on cpu {cpu}");
-            }
+    let probe: Option<Box<dyn Probe>> = match cli.probe {
+        ProbeType::PowercapSysfs => {
+            let zone_pkg = power_zones
+                .iter()
+                .find(|z| z.name == "package-0")
+                .context("no pkg powercap zone")?;
+            let z0 = vec![(zone_pkg, 0u32)];
+            Some(Box::new(powercap::PowercapProbe::new(&z0)?))
         }
-        std::thread::sleep(Duration::from_secs(1).mul_f32(0.5));
+        ProbeType::PerfEvent => {
+            // Call perf_event_open for each event and each cpu, and populate the array with the file descriptors
+            // NB: the AMD node we have only supports the "pkg" domain event, so we only use this one.
+            // A bug in the Linux kernel makes all events available in the sysfs (so in our `rapl_events`),
+            // see https://github.com/torvalds/linux/commit/0036fb00a756a2f6e360d44e2e3d2200a8afbc9b.
+            let pkg_event = rapl_events.iter().find(|e| e.name == "pkg").context("no pkg event")?;
+            Some(Box::new(perf_rapl::PerfEventProbe::new(&socket_cpus, pkg_event)?))
+        }
+        ProbeType::Ebpf => {
+            let pkg_event = rapl_events.iter().find(|e| e.name == "pkg").context("no pkg event")?;
+            Some(Box::new(ebpf::EbpfProbe::new(&socket_cpus, pkg_event, cli.frequency)?))
+        }
+        ProbeType::None => None,
+    };
+
+    // Query the probe at the given frequency, in another thread
+    if let Some(p) = probe {
+        tokio::spawn(async move {
+            poll_energy_probe(p, cli.frequency as f64).expect("probe error");
+        });
+    }
+
+    // start a big computation with sysbench
+    std::thread::sleep(Duration::from_secs(10));
+    //run_cpu_benchmark(50_000)?;
+
+    // Exit and stop the polling.
+    std::process::exit(0);
+    // Ok(())
+}
+
+fn poll_energy_probe(mut probe: Box<dyn Probe>, frequency: f64) -> anyhow::Result<()> {
+    let period = 1.0 / frequency;
+    let dur = Duration::from_secs_f64(period);
+    let mut previous: Option<u64> = None;
+    loop {
+        // sleep before the first measurement, because the eBPF program has probably
+        // not been triggered by the clock event yet
+        std::thread::sleep(dur);
+
+        let measurements = probe.read_uj()?;
+        debug!("Got {measurements:?} uj");
+        let current = measurements.first().unwrap().energy_counter;
+        if let Some(prev) = previous {
+            let diff = current-prev;
+            // todo handle overflow
+            let diff_j = (diff as f64) / 1000_000.0;
+            debug!("Consumed since last time: {diff_j} Joules")
+        }
+        previous = Some(current);
     }
 }
 
-/// Loads the BPF bytecode from the compilation result of the "ebpf" module.
-fn load_ebpf_code() -> Result<Bpf, BpfError> {
-    // This will include your eBPF object file as raw bytes at compile-time and load it at
-    // runtime. This approach is recommended for most real-world use cases. If you would
-    // like to specify the eBPF program at runtime rather than at compile-time, you can
-    // reach for `Bpf::load_file` instead.
-    #[cfg(debug_assertions)]
-    let ebpf_bytecode = include_bytes_aligned!("../../target/bpfel-unknown-none/debug/ebpf");
-
-    #[cfg(not(debug_assertions))]
-    let ebpf_bytecode = include_bytes_aligned!("../../target/bpfel-unknown-none/release/ebpf");
-
-    Bpf::load(ebpf_bytecode)
+fn run_cpu_benchmark(n_events: usize) -> anyhow::Result<()> {
+    // It seems more precise to limit the number of events instead of the running time.
+    // The goal "number of events" seems to be always reached perfectly, but the running time slightly varies.
+    let n_cores = online_cpus()?.len();
+    let child = Command::new("sysbench")
+        .args([
+            "cpu",
+            "run",
+            &format!("--events={n_events}"),
+            &format!("--threads={n_cores}"),
+        ])
+        .spawn()?;
+    let out = child.wait_with_output()?;
+    let stdout = std::str::from_utf8(&out.stdout)?;
+    println!("{stdout}");
+    Ok(())
 }
-
-// TODO monitor more than just the pkg

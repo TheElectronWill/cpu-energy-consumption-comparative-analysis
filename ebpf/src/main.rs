@@ -3,7 +3,7 @@
 
 use aya_bpf::{
     helpers::bpf_get_smp_processor_id,
-    helpers::bpf_get_numa_node_id,
+    // helpers::bpf_get_numa_node_id,
     macros::{map, perf_event},
     maps::PerfEventArray,
     programs::PerfEventContext,
