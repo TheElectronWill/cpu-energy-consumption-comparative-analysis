@@ -7,15 +7,14 @@ use aya_bpf::{
     macros::{map, perf_event},
     maps::PerfEventArray,
     programs::PerfEventContext,
-    BpfContext,
 };
-use aya_log_ebpf::{error, info};
+use aya_log_ebpf::{error, debug};
 
 #[map]
-static mut DESCRIPTORS: PerfEventArray<i32> = PerfEventArray::with_max_entries(64, 0);
+static mut DESCRIPTORS: PerfEventArray<i32> = PerfEventArray::with_max_entries(128, 0);
 
 #[map]
-static mut EVENTS: PerfEventArray<u64> = PerfEventArray::with_max_entries(64, 0);
+static mut EVENTS: PerfEventArray<u64> = PerfEventArray::with_max_entries(128, 0);
 
 #[perf_event]
 pub fn aya_start(ctx: PerfEventContext) -> i32 {
@@ -30,12 +29,14 @@ pub fn aya_start(ctx: PerfEventContext) -> i32 {
 
 fn try_aya_start(ctx: &PerfEventContext) -> Result<i32, i64> {
     let cpu = unsafe { bpf_get_smp_processor_id() };
+    
+    #[cfg(debug_assertions)]
     match ctx.pid() {
-        0 => info!(
+        0 => debug!(
             ctx,
             "perf_event 'perftest' triggered on CPU {}, running a kernel task", cpu
         ),
-        pid => info!(
+        pid => debug!(
             ctx,
             "perf_event 'perftest' triggered on CPU {}, running PID {}", cpu, pid
         ),
@@ -43,7 +44,8 @@ fn try_aya_start(ctx: &PerfEventContext) -> Result<i32, i64> {
     // read PMU data from file descriptor in the array, by cpu id
     let value = unsafe { DESCRIPTORS.read_at_index(cpu)? };
 
-    info!(ctx, "got value {} at cpu {}", value.counter, cpu);
+    #[cfg(debug_assertions)]
+    debug!(ctx, "got value {} at cpu {}", value.counter, cpu);
 
     // push the update to userspace, using bpf_perf_event_output (wrapped) with
     // BPF_F_CURRENT_CPU as a flag (done by output_current_cpu).

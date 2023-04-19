@@ -4,7 +4,7 @@ pub mod powercap;
 
 pub trait Probe: Send {
     /// Reads the current value of the probe, in **microJoules**.
-    fn read_uj(&mut self) -> anyhow::Result<Vec<EnergyMeasurement>>;
+    fn read_uj(&mut self, out: &mut Vec<EnergyMeasurement>) -> anyhow::Result<()>;
 }
 
 #[derive(Debug)]
@@ -14,7 +14,7 @@ pub struct EnergyMeasurement {
     /// If you need the energy consumed by a task,
     /// you need to measure before and after the task:
     ///
-    /// ```
+    /// ```ignore
     /// let before = probe.read_uj();
     /// run_task();
     /// let after = probe.read_uj();

@@ -1,11 +1,12 @@
 use anyhow::{Context, Result};
 use aya::programs::PerfEventScope;
+use log::debug;
 use perf_event_open_sys as sys;
 use std::{
     fs::{self, File},
     io::Read,
     num::ParseIntError,
-    os::fd::FromRawFd,
+    os::fd::{FromRawFd, self},
     path::Path,
 };
 
@@ -50,7 +51,7 @@ impl PowerEvent {
         attr.config = self.code.into();
         attr.type_ = pmu_type;
         attr.size = core::mem::size_of_val(&attr) as u32;
-        dbg!(attr);
+        debug!("{attr:?}");
 
         let result = unsafe { sys::perf_event_open(&mut attr, pid, cpu, -1, 0) };
         if result == -1 {
@@ -172,8 +173,7 @@ impl PerfEventProbe {
 }
 
 impl super::Probe for PerfEventProbe {
-    fn read_uj(&mut self) -> anyhow::Result<Vec<EnergyMeasurement>> {
-        let mut measurements = Vec::with_capacity(self.opened.len());
+    fn read_uj(&mut self, out: &mut Vec<EnergyMeasurement>) -> anyhow::Result<()> {
         let mut buf = [0u8; 8];
 
         for evt in &mut self.opened {
@@ -182,11 +182,11 @@ impl super::Probe for PerfEventProbe {
             let raw = u64::from_ne_bytes(buf);
             let joules = (raw as f64) * evt.scale;
             let u_joules = (joules * 1000_000.0) as u64; // Joules to microJoules
-            measurements.push(EnergyMeasurement {
+            out.push(EnergyMeasurement {
                 energy_counter: u_joules,
                 cpu: evt.cpu,
             })
         }
-        Ok(measurements)
+        Ok(())
     }
 }

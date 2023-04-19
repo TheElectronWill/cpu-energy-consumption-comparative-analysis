@@ -109,22 +109,20 @@ impl PowercapProbe {
 }
 
 impl super::Probe for PowercapProbe {
-    fn read_uj(&mut self) -> anyhow::Result<Vec<EnergyMeasurement>> {
-        let mut measurements = Vec::with_capacity(self.zones.len());
-
+    fn read_uj(&mut self, out: &mut Vec<EnergyMeasurement>) -> anyhow::Result<()> {
         for zone in &mut self.zones {
             zone.file.rewind()?;
             let mut buf = Vec::with_capacity(zone.buf_size_hint);
             zone.file.read_to_end(&mut buf)?;
 
             let energy_counter: u64 = std::str::from_utf8(&buf)?.trim_end().parse()?;
-            // TODO try with utf validation disabled
-            measurements.push(EnergyMeasurement {
+            // TODO try with utf validation disabled ?
+            out.push(EnergyMeasurement {
                 energy_counter,
                 cpu: zone.cpu,
             })
         }
-        Ok(measurements)
+        Ok(())
     }
 }
 
