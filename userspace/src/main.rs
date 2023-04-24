@@ -108,7 +108,13 @@ async fn main() -> Result<(), anyhow::Error> {
     };
 
     // Query the probe at the given frequency, in another thread
-    let polling_period = Duration::from_secs_f64(1.0 / cli.frequency as f64);
+    let polling_period = Duration::from_secs_f64({
+        if cli.frequency == 0 {
+            0.0
+        } else {
+            1.0 / cli.frequency as f64
+        }
+    });
     if let Some(p) = probe {
         tokio::task::spawn(async move {
             poll_energy_probe(p, polling_period).await.expect("probe error");
@@ -150,10 +156,17 @@ async fn poll_energy_probe(mut probe: Box<dyn Probe>, period: Duration) -> anyho
         for m in &measurements {
             let current = m.energy_counter;
             if let Some(prev) = previous.insert(m.cpu, current) {
-                let diff = current - prev;
-                let diff_j = (diff as f64) / 1000_000.0;
-                std::hint::black_box(diff_j); // don't optimize this away!
+                // the counter can overflow, assume it does so only once
+                // (multiple overflows can occur if the polling frequency is very low, but we cannot detect them)
+                let diff_uj =
+                    if current < prev {
+                        u64::MAX - prev + current
+                    } else {
+                        current - prev
+                    };
+                let diff_j = (diff_uj as f64) / 1000_000.0;
                 debug!("Consumed since last time: {diff_j} Joules");
+                std::hint::black_box(diff_j); // don't optimize this away!
             }
         }
         measurements.clear(); // we don't do anything with the measurements, clear them to avoid a leak
