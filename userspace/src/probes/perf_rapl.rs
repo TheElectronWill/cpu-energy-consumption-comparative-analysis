@@ -6,7 +6,7 @@ use std::{
     fs::{self, File},
     io::Read,
     num::ParseIntError,
-    os::fd::{FromRawFd, self},
+    os::fd::FromRawFd,
     path::Path,
 };
 

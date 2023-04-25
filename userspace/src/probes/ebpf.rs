@@ -1,7 +1,7 @@
 use anyhow::Context;
 use aya::maps::perf::bytes::BytesMut;
-use aya::maps::perf::{PerfEventArrayBuffer, AsyncPerfEventArrayBuffer};
-use aya::maps::{AsyncPerfEventArray, MapData, PerfEventArray};
+use aya::maps::perf::PerfEventArrayBuffer;
+use aya::maps::{MapData, PerfEventArray};
 use aya::programs::{perf_event, PerfEvent, PerfEventScope};
 use aya::{include_bytes_aligned, Bpf, BpfError};
 use aya_log::BpfLogger;

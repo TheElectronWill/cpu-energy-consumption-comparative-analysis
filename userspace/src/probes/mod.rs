@@ -1,6 +1,7 @@
 pub mod ebpf;
 pub mod perf_rapl;
 pub mod powercap;
+pub mod msr;
 
 pub trait Probe: Send {
     /// Reads the current value of the probe, in **microJoules**.

@@ -10,7 +10,7 @@ use aya::util::online_cpus;
 use clap::{Parser, ValueEnum};
 use log::{debug, info};
 use regex::Regex;
-use userspace::probes::{ebpf, perf_rapl, powercap, EnergyMeasurement, Probe};
+use userspace::probes::{ebpf, msr, perf_rapl, powercap, EnergyMeasurement, Probe};
 
 #[derive(Parser)]
 #[command(author, version)]
@@ -40,7 +40,7 @@ enum ProbeType {
     PowercapSysfs,
     PerfEvent,
     Ebpf,
-    //EbpfAsync,
+    Msr,
     None,
 }
 
@@ -50,7 +50,7 @@ impl Display for ProbeType {
             ProbeType::PowercapSysfs => "powercap-sysfs",
             ProbeType::PerfEvent => "perf-event",
             ProbeType::Ebpf => "ebpf",
-            //ProbeType::EbpfAsync => "ebpf-async",
+            ProbeType::Msr => "msr",
             ProbeType::None => "none",
         };
         f.write_str(str)
@@ -103,6 +103,10 @@ async fn main() -> Result<(), anyhow::Error> {
         ProbeType::Ebpf => {
             let pkg_event = rapl_events.iter().find(|e| e.name == "pkg").context("no pkg event")?;
             Some(Box::new(ebpf::EbpfProbe::new(&socket_cpus, pkg_event, cli.frequency)?))
+        }
+        ProbeType::Msr => {
+            let vendor = msr::get_cpu_vendor()?;
+            Some(Box::new(msr::MsrProbe::new(&socket_cpus, &vendor)?))
         }
         ProbeType::None => None,
     };
@@ -158,12 +162,11 @@ async fn poll_energy_probe(mut probe: Box<dyn Probe>, period: Duration) -> anyho
             if let Some(prev) = previous.insert(m.cpu, current) {
                 // the counter can overflow, assume it does so only once
                 // (multiple overflows can occur if the polling frequency is very low, but we cannot detect them)
-                let diff_uj =
-                    if current < prev {
-                        u64::MAX - prev + current
-                    } else {
-                        current - prev
-                    };
+                let diff_uj = if current < prev {
+                    u64::MAX - prev + current
+                } else {
+                    current - prev
+                };
                 let diff_j = (diff_uj as f64) / 1000_000.0;
                 debug!("Consumed since last time: {diff_j} Joules");
                 std::hint::black_box(diff_j); // don't optimize this away!
