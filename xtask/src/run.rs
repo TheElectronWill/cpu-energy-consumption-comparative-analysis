@@ -21,6 +21,8 @@ pub struct Options {
     pub run_args: Vec<String>,
 }
 
+const USERSPACE_BIN_NAME: &str = "benchmark";
+
 /// Build the project
 fn build(opts: &Options) -> Result<(), anyhow::Error> {
     let mut args = vec!["build"];
@@ -38,16 +40,19 @@ fn build(opts: &Options) -> Result<(), anyhow::Error> {
 /// Build and run the project
 pub fn run(opts: Options) -> Result<(), anyhow::Error> {
     // build our ebpf program followed by our application
-    build_ebpf(BuildOptions {
+    let build_opts = BuildOptions {
         target: opts.bpf_target,
         release: opts.release,
-    })
-    .context("Error while building eBPF program")?;
-    build(&opts).context("Error while building userspace application")?;
+    };
+    build_ebpf(build_opts).context("Error while building eBPF program")?;
+
+    build(&opts).context(format!(
+        "Error while building userspace application '{USERSPACE_BIN_NAME}'"
+    ))?;
 
     // profile we are building (release or debug)
     let profile = if opts.release { "release" } else { "debug" };
-    let bin_path = format!("target/{profile}/userspace");
+    let bin_path = format!("target/{profile}/{USERSPACE_BIN_NAME}");
 
     // arguments to pass to the application
     let mut run_args: Vec<_> = opts.run_args.iter().map(String::as_str).collect();

@@ -1,26 +1,20 @@
 [package]
-name = "userspace"
+name = "benchmark"
 version = "0.1.0"
 edition = "2021"
-publish = false
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-aya = { version = ">=0.11", features=["async_tokio"] }
-aya-log = "0.1"
-common = { path = "../common", features = ["user"] }
+rapl_probes = { path = "../rapl_probes" }
 anyhow = "1"
-tokio = { version = "1.25", features = ["macros", "rt", "rt-multi-thread", "net", "signal", "time"] }
-perf-event-open-sys = "4.0.0"
 clap = "4.2.1"
-regex = "1.7.3"
 env_logger = "0.10"
+regex = "1.7.3"
+tokio = { version = "1.25", features = ["macros", "rt", "rt-multi-thread", "net", "signal", "time"] }
 
 # Remove debug! logging statements in release move
 log = { version = "0.4", features = ["release_max_level_warn"] }
-
-[[bin]]
-name = "userspace"
-path = "src/main.rs"
 
 [dev-dependencies]
 criterion = { version = "0.4", features = ["html_reports", "async_tokio"] }
@@ -28,3 +22,7 @@ criterion = { version = "0.4", features = ["html_reports", "async_tokio"] }
 [[bench]]
 name = "benchmark_probes"
 harness = false
+
+[[bin]]
+name = "benchmark"
+path = "src/main.rs"

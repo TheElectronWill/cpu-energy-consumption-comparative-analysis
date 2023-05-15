@@ -4,21 +4,22 @@ use log::debug;
 use perf_event_open_sys as sys;
 use std::{
     fs::{self, File},
-    io::Read,
-    num::ParseIntError,
+    io::{self, Read},
     os::fd::FromRawFd,
     path::Path,
 };
 
-use super::EnergyMeasurement;
+use super::{CpuId, EnergyProbe, RaplDomainType};
 
 // See https://github.com/torvalds/linux/commit/4788e5b4b2338f85fa42a712a182d8afd65d7c58
 // for an explaination of the RAPL PMU driver.
 
 #[derive(Debug)]
 pub struct PowerEvent {
-    /// The name of the power event. This corresponds to a RAPL **domain name**, like "pkg".
+    /// The name of the power event, as reported by the sysfs. This corresponds to a RAPL **domain name**, like "pkg".
     pub name: String,
+    /// The RAPL domain type, as an enum.
+    pub domain: RaplDomainType,
     /// The event code to use as a "config" field for perf_event_open
     pub code: u8,
     /// should be "Joules"
@@ -73,18 +74,6 @@ pub fn pmu_type() -> Result<u32> {
     Ok(typ)
 }
 
-/// Retrieves the CPUs to monitor (one per socket) in order
-/// to get RAPL perf counters.
-pub fn cpus_to_monitor() -> Result<Vec<u32>> {
-    let mask = fs::read_to_string("/sys/devices/power/cpumask")?;
-    let res = mask
-        .trim_end()
-        .split(',')
-        .map(str::parse)
-        .collect::<Result<Vec<u32>, ParseIntError>>()?;
-    Ok(res)
-}
-
 /// Retrieves all RAPL power events exposed in sysfs.
 /// There can be more than just `cores`, `pkg` and `dram`.
 /// For instance, there can be `gpu` and
@@ -120,6 +109,17 @@ pub fn all_power_events() -> Result<Vec<PowerEvent>> {
         Ok(scale)
     }
 
+    fn parse_event_name(name: &str) -> Option<RaplDomainType> {
+        match name {
+            "cores" => Some(RaplDomainType::PP0),
+            "gpu" => Some(RaplDomainType::PP1),
+            "psys" => Some(RaplDomainType::Platform),
+            "pkg" => Some(RaplDomainType::Package),
+            "ram" => Some(RaplDomainType::Dram),
+            _ => None,
+        }
+    }
+
     // Find all the events
     for e in fs::read_dir("/sys/devices/power/events")? {
         let entry = e?;
@@ -127,13 +127,17 @@ pub fn all_power_events() -> Result<Vec<PowerEvent>> {
         let file_name = path.file_name().unwrap().to_string_lossy();
         // only list the main file, not *.unit nor *.scale
         if path.is_file() && !file_name.contains('.') {
+            // The files are named "energy-pkg", "energy-dram", ...
             if let Some(event_name) = file_name.strip_prefix("energy-") {
                 // We have the name of the event, we can read all the info
+                let name = event_name.to_owned();
                 let code = read_event_code(&path)?;
                 let unit = read_event_unit(&path)?;
                 let scale = read_event_scale(&path)?;
+                let domain = parse_event_name(&name).with_context(|| format!("Unknown RAPL perf event {name}"))?;
                 events.push(PowerEvent {
-                    name: event_name.to_owned(),
+                    name,
+                    domain,
                     code,
                     unit,
                     scale,
@@ -146,47 +150,53 @@ pub fn all_power_events() -> Result<Vec<PowerEvent>> {
 
 /// Energy probe based on perf_event for intel RAPL.
 pub struct PerfEventProbe {
-    opened: Vec<OpenedPowerEvent>,
+    events: Vec<OpenedPowerEvent>,
 }
 
 struct OpenedPowerEvent {
-    file: File,
+    fd: File,
     scale: f64,
-    cpu: u32,
+    socket: u32,
+    domain: RaplDomainType,
 }
 
 impl PerfEventProbe {
-    pub fn new(socket_cpus: &Vec<u32>, event: &PowerEvent) -> anyhow::Result<PerfEventProbe> {
+    pub fn new(socket_cpus: &[CpuId], events: &[&PowerEvent]) -> anyhow::Result<PerfEventProbe> {
         let pmu_type = pmu_type()?;
-        let mut opened = Vec::with_capacity(socket_cpus.len());
-        for cpu in socket_cpus {
-            let fd = event.perf_event_open(
-                pmu_type,
-                aya::programs::PerfEventScope::AllProcessesOneCpu { cpu: *cpu },
-            )?;
-            let file = unsafe { File::from_raw_fd(fd) };
-            let scale = event.scale as f64;
-            opened.push(OpenedPowerEvent { file, scale, cpu: *cpu })
+        let mut opened = Vec::with_capacity(socket_cpus.len() * events.len());
+        for CpuId { cpu, socket } in socket_cpus {
+            for event in events {
+                let raw_fd = event.perf_event_open(
+                    pmu_type,
+                    aya::programs::PerfEventScope::AllProcessesOneCpu { cpu: *cpu },
+                )?;
+                let fd = unsafe { File::from_raw_fd(raw_fd) };
+                let scale = event.scale as f64;
+                opened.push(OpenedPowerEvent {
+                    fd,
+                    scale,
+                    socket: *socket,
+                    domain: event.domain,
+                })
+            }
         }
-        Ok(PerfEventProbe { opened })
+        Ok(PerfEventProbe { events: opened })
     }
 }
 
-impl super::Probe for PerfEventProbe {
-    fn read_uj(&mut self, out: &mut Vec<EnergyMeasurement>) -> anyhow::Result<()> {
-        let mut buf = [0u8; 8];
-
-        for evt in &mut self.opened {
-            // evt.file.rewind()?; INVALID for perf events, and useless
-            evt.file.read(&mut buf)?;
-            let raw = u64::from_ne_bytes(buf);
-            let joules = (raw as f64) * evt.scale;
-            let u_joules = (joules * 1000_000.0) as u64; // Joules to microJoules
-            out.push(EnergyMeasurement {
-                energy_counter: u_joules,
-                cpu: evt.cpu,
-            })
+impl EnergyProbe for PerfEventProbe {
+    fn read_consumed_energy(&mut self, to: &mut super::EnergyMeasurements) -> anyhow::Result<()> {
+        for evt in &mut self.events {
+            let counter_value = read_perf_event(&mut evt.fd)?;
+            to.push(evt.socket, evt.domain, counter_value, evt.scale);
         }
         Ok(())
     }
+}
+
+fn read_perf_event(fd: &mut File) -> io::Result<u64> {
+    let mut buf = [0u8; 8];
+    // rewind() is INVALID for perf events, we must read "at the cursor" every time
+    fd.read(&mut buf)?;
+    Ok(u64::from_ne_bytes(buf))
 }
