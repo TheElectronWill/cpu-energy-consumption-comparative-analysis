@@ -6,7 +6,7 @@ publish = false
 
 [dependencies]
 aya = { version = ">=0.11", features=["async_tokio"] }
-aya-log = "0.1"
+aya-log = { version = "0.1", optional = true}
 anyhow = "1"
 perf-event-open-sys = "4.0.0"
 clap = { version = "4.2.1", features = ["derive"] }
@@ -17,3 +17,6 @@ enum-map = "2.5.0"
 # Remove debug! logging statements in release move
 log = { version = "0.4", features = ["release_max_level_warn"] }
 bytes = "1.4.0"
+
+[features]
+ebpf = ["aya-log"]

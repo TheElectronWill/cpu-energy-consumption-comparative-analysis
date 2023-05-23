@@ -6,7 +6,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-rapl_probes = { path = "../rapl_probes" }
+rapl_probes = { path = "../rapl_probes", features = ["ebpf"]}
 anyhow = "1"
 clap = "4.2.1"
 env_logger = "0.10"

@@ -3,7 +3,9 @@ use std::{fs, io, num::ParseIntError};
 use clap::ValueEnum;
 use enum_map::{self, Enum, EnumMap};
 
+#[cfg(feature = "ebpf")]
 pub mod ebpf;
+
 pub mod msr;
 pub mod perf_event;
 pub mod powercap;
@@ -169,6 +171,7 @@ pub fn cpus_to_monitor() -> anyhow::Result<Vec<CpuId>> {
     Ok(res)
 }
 
+#[cfg(feature = "ebpf")]
 pub fn online_cpus() -> io::Result<Vec<u32>> {
     aya::util::online_cpus()
 }
