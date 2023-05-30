@@ -201,7 +201,6 @@ fn parse_cpu_list(cpulist: &str) -> anyhow::Result<Vec<u32>> {
     Ok(cpus)
 }
 
-#[cfg(feature = "ebpf")]
 pub fn online_cpus() -> anyhow::Result<Vec<u32>> {
     let list = fs::read_to_string("/sys/devices/system/cpu/online")?;
     parse_cpu_list(&list)

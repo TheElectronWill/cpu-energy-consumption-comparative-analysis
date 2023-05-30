@@ -1,16 +1,16 @@
 use std::collections::HashSet;
 
 use anyhow::{anyhow, Context};
-use bytes::BytesMut;
 use aya::maps::perf::PerfEventArrayBuffer;
 use aya::maps::{Array, MapData, PerfEventArray};
-use aya::programs::{self, PerfEvent, PerfEventScope};
+use aya::programs::{self, PerfEvent};
 use aya::{include_bytes_aligned, Bpf, BpfError};
 use aya_log::BpfLogger;
 
+use bytes::BytesMut;
 use log::{debug, warn};
 
-use super::perf_event::{self, PowerEvent};
+use super::perf_event::{pmu_type, PowerEvent};
 use super::{CpuId, EnergyProbe, RaplDomainType};
 
 // See EbpfProbe::new
@@ -148,11 +148,11 @@ fn prepare_ebpf_probe(socket_cpus: &[CpuId], events: &[&PowerEvent], freq_hz: u6
         let mut fd_array = PerfEventArray::try_from(bpf.map_mut("DESCRIPTORS").expect("map not found: DESCRIPTORS"))?;
 
         // Call perf_event_open for each event and each cpu (the callee should give one cpu per socket)
-        let pmu_type = perf_event::pmu_type().context("get pmu_type")?;
+        let pmu_type = pmu_type().context("get pmu_type")?;
         for cpu_info in socket_cpus {
             for (i, event) in events.iter().enumerate() {
                 let cpu_id = cpu_info.cpu;
-                let fd = event.perf_event_open(pmu_type, PerfEventScope::AllProcessesOneCpu { cpu: cpu_id })?;
+                let fd = event.perf_event_open(pmu_type, cpu_id)?;
                 let index = cpu_id + i as u32;
                 fd_array.set(index, fd)?;
             }

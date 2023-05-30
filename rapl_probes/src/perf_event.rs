@@ -1,5 +1,4 @@
 use anyhow::{Context, Result};
-use aya::programs::PerfEventScope;
 use log::debug;
 use perf_event_open_sys as sys;
 use std::{
@@ -35,18 +34,13 @@ impl PowerEvent {
     ///
     /// # Arguments
     /// * `pmu_type` - The type of the RAPL PMU, given by [`pmu_type()`].
-    /// * `scope` - Defines which process and CPU to monitor
+    /// * `cpu_id` - Defines which CPU (core) to monitor, given by [`super::cpus_to_monitor()`]
     ///
-    pub fn perf_event_open(&self, pmu_type: u32, scope: PerfEventScope) -> std::io::Result<i32> {
+    pub fn perf_event_open(&self, pmu_type: u32, cpu_id: u32) -> std::io::Result<i32> {
         // Only some combination of (pid, cpu) are valid.
-        // PerfEventScope always represents a valid combination, to avoid errors.
-        let (pid, cpu) = match scope {
-            PerfEventScope::CallingProcessAnyCpu => (0, -1),
-            PerfEventScope::CallingProcessOneCpu { cpu } => (0, cpu as i32),
-            PerfEventScope::OneProcessAnyCpu { pid } => (pid as i32, -1),
-            PerfEventScope::OneProcessOneCpu { cpu, pid } => (pid as i32, cpu as i32),
-            PerfEventScope::AllProcessesOneCpu { cpu } => (-1, cpu as i32),
-        };
+        // For RAPL PMU events, we use (-1, cpu) which means "all processes, one cpu".
+        let pid = -1; // all processes
+        let cpu = cpu_id as i32;
 
         let mut attr = sys::bindings::perf_event_attr::default();
         attr.config = self.code.into();
@@ -168,7 +162,7 @@ impl PerfEventProbe {
             for event in events {
                 let raw_fd = event.perf_event_open(
                     pmu_type,
-                    aya::programs::PerfEventScope::AllProcessesOneCpu { cpu: *cpu },
+                    *cpu,
                 )?;
                 let fd = unsafe { File::from_raw_fd(raw_fd) };
                 let scale = event.scale as f64;
