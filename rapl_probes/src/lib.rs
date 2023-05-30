@@ -1,4 +1,4 @@
-use std::{fs, io, num::ParseIntError};
+use std::{fs, num::ParseIntError};
 
 use clap::ValueEnum;
 use enum_map::{self, Enum, EnumMap};
@@ -32,13 +32,13 @@ impl RaplDomainType {
         RaplDomainType::Dram,
         RaplDomainType::Platform,
     ];
-    
+
     pub const ALL_IN_ADDR_ORDER: [RaplDomainType; 5] = [
         RaplDomainType::Package,
         RaplDomainType::Dram,
         RaplDomainType::PP0,
         RaplDomainType::PP1,
-        RaplDomainType::Platform,  
+        RaplDomainType::Platform,
     ];
 }
 
@@ -146,7 +146,7 @@ impl EnergyMeasurements {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CpuId {
     pub cpu: u32,
     pub socket: u32,
@@ -156,22 +156,91 @@ pub struct CpuId {
 /// to get RAPL perf counters.
 pub fn cpus_to_monitor() -> anyhow::Result<Vec<CpuId>> {
     let mask = fs::read_to_string("/sys/devices/power/cpumask")?;
-    let res = mask
+    let cpus_and_sockets = parse_cpu_and_socket_list(&mask)?;
+    Ok(cpus_and_sockets)
+}
+
+fn parse_cpu_and_socket_list(cpulist: &str) -> anyhow::Result<Vec<CpuId>> {
+    let cpus = parse_cpu_list(cpulist);
+
+    // here we assume that /sys/devices/power/cpumask returns one cpu per socket
+    let cpus_and_sockets = cpus?
+        .into_iter()
+        .enumerate()
+        .map(|(i, cpu)| CpuId { cpu, socket: i as u32 })
+        .collect();
+
+    Ok(cpus_and_sockets)
+}
+
+fn parse_cpu_list(cpulist: &str) -> anyhow::Result<Vec<u32>> {
+    // handles "n" or "start-end"
+    fn parse_cpulist_item(item: &str) -> anyhow::Result<Vec<u32>> {
+        let bounds: Vec<u32> = item
+            .split('-')
+            .map(str::parse)
+            .collect::<Result<Vec<u32>, ParseIntError>>()?;
+
+        match bounds.as_slice() {
+            &[start, end] => Ok((start..=end).collect()),
+            &[n] => Ok(vec![n]),
+            _ => Err(anyhow::anyhow!("invalid cpulist: {}", item)),
+        }
+    }
+
+    // this can be "0,64" or "0-1" or maybe "0-1,64-66"
+    let cpus: Vec<u32> = cpulist
         .trim_end()
         .split(',')
-        .map(str::parse)
-        .collect::<Result<Vec<u32>, ParseIntError>>()?
-        .iter()
-        .enumerate()
-        .map(|(socket, cpu)| CpuId {
-            cpu: *cpu,
-            socket: socket as u32,
-        })
+        .map(parse_cpulist_item)
+        .collect::<anyhow::Result<Vec<Vec<u32>>>>()?
+        .into_iter() // not the same as iter() !
+        .flatten()
         .collect();
-    Ok(res)
+
+    Ok(cpus)
 }
 
 #[cfg(feature = "ebpf")]
-pub fn online_cpus() -> io::Result<Vec<u32>> {
-    aya::util::online_cpus()
+pub fn online_cpus() -> anyhow::Result<Vec<u32>> {
+    let list = fs::read_to_string("/sys/devices/system/cpu/online")?;
+    parse_cpu_list(&list)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::parse_cpu_and_socket_list;
+    use crate::CpuId;
+
+    #[test]
+    fn test_parse_cpumask() -> anyhow::Result<()> {
+        let single = "0";
+        assert_eq!(parse_cpu_and_socket_list(single)?, vec![CpuId { cpu: 0, socket: 0 }]);
+
+        let comma = "0,64";
+        assert_eq!(
+            parse_cpu_and_socket_list(comma)?,
+            vec![CpuId { cpu: 0, socket: 0 }, CpuId { cpu: 64, socket: 1 }]
+        );
+
+        let caret = "0-1";
+        assert_eq!(
+            parse_cpu_and_socket_list(caret)?,
+            vec![CpuId { cpu: 0, socket: 0 }, CpuId { cpu: 1, socket: 1 }]
+        );
+
+        let combined = "1-3,5-6";
+        assert_eq!(
+            parse_cpu_and_socket_list(combined)?,
+            vec![
+                CpuId { cpu: 1, socket: 0 },
+                CpuId { cpu: 2, socket: 1 },
+                CpuId { cpu: 3, socket: 2 },
+                CpuId { cpu: 5, socket: 3 },
+                CpuId { cpu: 6, socket: 4 },
+            ]
+        );
+
+        Ok(())
+    }
 }
