@@ -1,5 +1,5 @@
 [workspace]
-members = ["rapl_probes", "xtask", "benchmark"]
+members = ["rapl_probes", "xtask", "cli_poll_rapl"]
 
 [patch.crates-io]
 aya = { path = "../aya/aya" }
