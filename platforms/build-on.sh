@@ -21,4 +21,7 @@ if [ ! -f "$dockerfile" ]; then
 fi
 
 docker build -t rust-rhel - < "$dockerfile"
+# This will open a terminal in the docker. You'll have to do:
+# cargo build --release && cp /root/target/release/userspace /mnt/sources/rapl-ebpf-experiments/platforms/userspace-RHEL8 && chown 1000:1000 /mnt/sources/rapl-ebpf-experiments/platforms/userspace-RHEL8
+#
 docker run -v "$parent_dir":"$MOUNT_POINT" -w "$WORKING_DIR" -it rust-rhel

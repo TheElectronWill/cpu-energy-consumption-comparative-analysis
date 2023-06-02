@@ -43,41 +43,8 @@ impl RaplDomainType {
 }
 
 pub trait EnergyProbe: Send {
-    /// Returns the number of Joules consumed since the last call, per domain,
-    /// based on the underlying energy counters, and a flag that indicates
-    /// whether an overflow has occured (`true` means overflow, `false` means no overflow).
+    /// Updates the energy measurements.
     ///
-    /// If this is the first call, returns `None`.
-    ///
-    /// ## Usage
-    ///
-    /// ```
-    /// // Retrieve the first CPU of each socket (the others won't work)
-    /// let socket_cpus = perf_rapl::cpus_to_monitor();
-    ///
-    /// // Init the measurements container.
-    /// let measurements = EnergyMeasurements::new(socket_cpus.len());
-    ///
-    /// // Init the energy probe (perf_event/msr/etc.), it will retrieve the RAPL counters
-    /// let probe = todo!("rapl_way::Probe::new(...)");
-    ///
-    /// // Measure in loop
-    /// loop {
-    ///     for (s, _) in socket_cpus.enumerate() {
-    ///         for (rapl_domain, counter) in measurements.domains_of_socket(s) {
-    ///             if let Some(consumed) = counter.joules {
-    ///                 println!("socket {s}, domain {rapl_domain}: {consumed} Joules")
-    ///             }
-    ///         }
-    ///     }
-    ///     std::thread::sleep(Duration::from_secs(1));
-    ///       
-    /// }
-    /// if let Some((joules, overflow)) = probe.read_consumed_joules() {
-    ///     println!("{joules} J consumed");
-    /// }
-    ///
-    /// ```
     ///
     /// ## Overflows
     ///

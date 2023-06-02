@@ -170,18 +170,27 @@ impl<const CHECK_UTF: bool> EnergyProbe for PowercapProbe<CHECK_UTF> {
         let mut buf = Vec::with_capacity(self.buf_size_hint);
 
         for zone in &mut self.zones {
+            // read the file from the beginning
             zone.file.rewind()?;
             zone.file.read_to_end(&mut buf)?;
 
+            // parse the content of the file
             let content = if CHECK_UTF {
                 std::str::from_utf8(&buf)?
             } else {
                 unsafe { std::str::from_utf8_unchecked(&buf) }
             };
             let counter_value: u64 = content.trim_end().parse()?;
-            buf.clear();
-
-            to.push(zone.socket, zone.domain, counter_value, POWERCAP_ENERGY_UNIT)
+            
+            // NOTE: Powercap returns the value of the MSR modified in the following way:
+            // TODO explain the computation
+            // See: https://github.com/torvalds/linux/blob/9e87b63ed37e202c77aa17d4112da6ae0c7c097c/drivers/powercap/intel_rapl_common.c#L167
+            
+            // store the value
+            to.push(zone.socket, zone.domain, counter_value, POWERCAP_ENERGY_UNIT);
+            
+            // clear the buffer, so that we can fill it again
+            buf.clear();   
         }
         Ok(())
     }

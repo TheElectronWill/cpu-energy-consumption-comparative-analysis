@@ -15,6 +15,3 @@ Cargo.lock
 # code editors
 .vim/
 .cargo/
-
-# other
-platforms/

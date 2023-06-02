@@ -25,25 +25,26 @@ struct Cli {
     #[arg(short, long)]
     frequency: u64,
 
-    /// Number of sysbench "events" to compute.
-    #[arg(short, long)]
-    n_events: usize,
-
-    /// The type of benchmark, see `sysbench --help`.
-    #[arg(short, long)]
-    benchmark_type: String,
-
-    /// Number of repetitions to do.
-    #[arg(short, long)]
-    repetitions: u64,
-
     /// Only show info about CPU and RAPL domains, then exit.
     #[arg(long, default_value_t = false)]
     info: bool,
 
     /// Print energy measurements on each iteration.
-    #[arg(short, long, default_value_t = false)]
-    print_energy: bool,
+    #[arg(short, long, default_value_t = OutputType::None)]
+    output: OutputType,
+}
+
+#[derive(Clone, ValueEnum, Debug, PartialEq, Eq)]
+enum OutputType {
+    None,
+    Stdout,
+    Csv,
+}
+
+impl Display for OutputType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        (self as &dyn std::fmt::Debug).fmt(f)
+    }
 }
 
 #[derive(Clone, ValueEnum, Debug, PartialEq, Eq)]
@@ -52,7 +53,6 @@ enum ProbeType {
     PerfEvent,
     Ebpf,
     Msr,
-    None,
 }
 
 impl Display for ProbeType {
@@ -62,7 +62,6 @@ impl Display for ProbeType {
             ProbeType::PerfEvent => "perf-event",
             ProbeType::Ebpf => "ebpf",
             ProbeType::Msr => "msr",
-            ProbeType::None => "none",
         };
         f.write_str(str)
     }
@@ -112,30 +111,29 @@ async fn main() -> Result<(), anyhow::Error> {
     }
 
     // create the RAPL probe
-    let probe: Option<Box<dyn EnergyProbe>> = match cli.probe {
+    let probe: Box<dyn EnergyProbe> = match cli.probe {
         ProbeType::PowercapSysfs => {
             let zones: Vec<&powercap::PowerZone> =
                 power_zones.iter().filter(|z| cli.domains.contains(&z.domain)).collect();
             let p = powercap::PowercapProbe::<true>::new(&zones)?;
-            Some(Box::new(p))
+            Box::new(p)
         }
         ProbeType::PerfEvent => {
             let events: Vec<&perf_event::PowerEvent> =
                 perf_events.iter().filter(|e| cli.domains.contains(&e.domain)).collect();
             let p = perf_event::PerfEventProbe::new(&socket_cpus, &events)?;
-            Some(Box::new(p))
+            Box::new(p)
         }
         ProbeType::Ebpf => {
             let events: Vec<&perf_event::PowerEvent> =
                 perf_events.iter().filter(|e| cli.domains.contains(&e.domain)).collect();
             let p = ebpf::EbpfProbe::new(&socket_cpus, &events, cli.frequency)?;
-            Some(Box::new(p))
+            Box::new(p)
         }
         ProbeType::Msr => {
             let p = msr::MsrProbe::new(&socket_cpus, &cli.domains)?;
-            Some(Box::new(p))
+            Box::new(p)
         }
-        ProbeType::None => None,
     };
 
     // Query the probe at the given frequency, in another thread
@@ -151,41 +149,18 @@ async fn main() -> Result<(), anyhow::Error> {
     let mut m = EnergyMeasurements::new(n_sock);
 
     // Poll the probe (if any) at regular intervals
-    let task = probe.map(|mut p| {
-        tokio::task::spawn(async move {
-            poll_energy_probe(&mut *p, polling_period, &mut m, cli.print_energy)
-                .await
-                .expect("probe error");
-        })
-    });
+    poll_energy_probe(probe.as_mut(), polling_period, &mut m, cli.output)
+        .await
+        .expect("probe error");
 
-    // wait for the measurement to begin
-    tokio::time::sleep(polling_period).await;
-
-    // Run the benchmark several times (without recreating the existing probes)
-    let benchmark_type = cli.benchmark_type.clone();
-    for _ in 0..cli.repetitions {
-        // start a big computation with sysbench, on all cores
-        // <--- t0
-        let result = bench::run_benchmark(&benchmark_type, cli.n_events, n_all_cores)?;
-        // <--- t1
-
-        // print a line of CSV
-        print_results(&cli, result);
-    }
-
-    // Exit and stop the polling.
-    if let Some(t) = task {
-        t.abort();
-    }
-    std::process::exit(0);
+    Ok(())
 }
 
 async fn poll_energy_probe(
     probe: &mut dyn EnergyProbe,
     period: Duration,
     m: &mut EnergyMeasurements,
-    print: bool,
+    output: OutputType,
 ) -> anyhow::Result<()> {
     loop {
         // sleep before the first measurement, because the eBPF program has probably
@@ -202,27 +177,6 @@ async fn poll_energy_probe(
 
         // prevent the compiler from removing the measurement
         std::hint::black_box(&m);
-    }
-}
-
-fn print_results(cli: &Cli, bench_result: Option<bench::SysbenchResults>) {
-    let bench = &cli.benchmark_type;
-    let probe = &cli.probe;
-    let freq = &cli.frequency;
-    let n_events = &cli.n_events;
-
-    if let Some(result) = bench_result {
-        let res_time = result.total_time;
-        let res_events_rate = result.events_per_sec.unwrap_or(0.0);
-        let latency_min = result.latency_min;
-        let latency_avg = result.latency_avg;
-        let latency_max = result.latency_max;
-        let latency_per = result.latency_percentile;
-        let latency_sum = result.latency_sum;
-
-        println!("bench={bench};probe={probe};freq={freq};n_events={n_events};time={res_time};rate={res_events_rate};lat_min={latency_min};lat_avg={latency_avg};lat_max={latency_max};lat_perc={latency_per};lat_sum={latency_sum}");
-    } else {
-        println!("bench={bench};probe={probe};freq={freq};n_events={n_events}")
     }
 }
 
