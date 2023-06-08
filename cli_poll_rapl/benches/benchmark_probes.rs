@@ -2,17 +2,20 @@ use std::time::Duration;
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use rapl_probes::{
-    ebpf::EbpfProbe,
     msr::MsrProbe,
     perf_event::{self, PerfEventProbe},
     powercap::{self, PowercapProbe},
-    EnergyMeasurements, EnergyProbe, RaplDomainType,
+    EnergyProbe, RaplDomainType,
 };
 
+#[cfg(feature = "bench_ebpf")]
+use rapl_probes::ebpf::EbpfProbe;
+
 fn init_powercap_probe<const CHECK_UTF: bool>(domains: &[RaplDomainType]) -> anyhow::Result<PowercapProbe<CHECK_UTF>> {
-    let all = powercap::all_power_zones()?;
+    let cpus = rapl_probes::cpus_to_monitor()?;
+    let all = powercap::all_power_zones()?.flat;
     let zones: Vec<&powercap::PowerZone> = all.iter().filter(|z| domains.contains(&z.domain)).collect();
-    PowercapProbe::new(&zones)
+    PowercapProbe::new(&cpus, &zones)
 }
 
 fn init_perf_probe(domains: &[RaplDomainType]) -> anyhow::Result<PerfEventProbe> {
@@ -22,6 +25,7 @@ fn init_perf_probe(domains: &[RaplDomainType]) -> anyhow::Result<PerfEventProbe>
     PerfEventProbe::new(&cpus, &events)
 }
 
+#[cfg(feature = "bench_ebpf")]
 fn init_ebpf_probe(domains: &[RaplDomainType]) -> anyhow::Result<EbpfProbe> {
     let all = perf_event::all_power_events()?;
     let cpus = rapl_probes::cpus_to_monitor()?;
@@ -38,13 +42,14 @@ fn init_msr_probe(domains: &[RaplDomainType]) -> anyhow::Result<MsrProbe> {
 fn criterion_benchmark(c: &mut Criterion) {
     let domains_lists: [(&str, &[RaplDomainType]); 5] = [
         ("1", &[RaplDomainType::Package]),
-        ("2",&[RaplDomainType::Package, RaplDomainType::PP0]),
-        ("3",&[RaplDomainType::Package, RaplDomainType::PP0, RaplDomainType::Platform]),
-        ("5name",&RaplDomainType::ALL),
-        ("5ordered",&RaplDomainType::ALL_IN_ADDR_ORDER),
+        ("2", &[RaplDomainType::Package, RaplDomainType::PP0]),
+        (
+            "3",
+            &[RaplDomainType::Package, RaplDomainType::PP0, RaplDomainType::Platform],
+        ),
+        ("5name", &RaplDomainType::ALL),
+        ("5ordered", &RaplDomainType::ALL_IN_ADDR_ORDER),
     ];
-
-    let socket_count = rapl_probes::cpus_to_monitor().unwrap().len();
 
     // criterion config
     let mut group = c.benchmark_group("RAPL");
@@ -61,14 +66,21 @@ fn criterion_benchmark(c: &mut Criterion) {
         let mut probe_perf = init_perf_probe(&domains).unwrap();
         let mut probe_msr = init_msr_probe(&domains).unwrap();
 
+        // Most of the time spent by the ebpf probe is kernel time, not user time, and it's not measured by criterion.
+        // Therefore, it's disabled by default.
+        #[cfg(feature = "bench_ebpf")]
+        let runtime = tokio::runtime::Runtime::new().unwrap(); // ebpf requires the tokio runtime to asynchronously poll the buffers
+        #[cfg(feature = "bench_ebpf")]
+        let mut probe_ebpf = runtime.block_on(async { init_ebpf_probe(&domains).unwrap() });
+
         // the benchmark
         let mut run_bench = |name: &str, probe: &mut dyn EnergyProbe| {
             let id = BenchmarkId::new(name, id);
             group.bench_function(id, |b| {
-                let mut m = EnergyMeasurements::new(socket_count);
+                probe.reset();
                 b.iter(|| {
-                    probe.read_consumed_energy(&mut m).unwrap();
-                    black_box(&m); // prevent compiler optimizations
+                    probe.poll().unwrap();
+                    black_box(probe.measurements()); // prevent compiler optimizations from removing the measurement
                 })
             });
         };
@@ -78,38 +90,9 @@ fn criterion_benchmark(c: &mut Criterion) {
         run_bench("powercap-sysfs-unchecked", &mut probe_powercap_unchecked);
         run_bench("perf-event-user", &mut probe_perf);
         run_bench("msr-lowlevel", &mut probe_msr);
+        #[cfg(feature = "bench_ebpf")]
+        run_bench("perf-event-ebpf", &mut probe_msr);
     }
-
-    // ebpf requires the tokio runtime to asynchronously poll the buffers
-    /*
-    {
-        let runtime = tokio::runtime::Runtime::new().unwrap();
-        let mut perf_ebpf = runtime.block_on(async { init_ebpf_probe(&domains).unwrap() });
-
-        group.bench_function("perf-ebpf", |b| {
-            let mut m = EnergyMeasurements::new(socket_count);
-            b.iter(|| black_box(perf_ebpf.read_consumed_energy(&mut m)))
-        });
-        // group.bench_function("perf-ebpf-busywait", |b| {
-        //     let mut m = EnergyMeasurements::new(socket_count);
-        //     b.iter(|| {
-        //         let mut measurements = perf_ebpf.read_consumed_energy(&mut m).unwrap();
-        //         while measurements.is_empty() {
-        //             measurements = perf_ebpf.read_uj().unwrap();
-        //         }
-        //         black_box(measurements);
-        //     })
-        // });
-        group.bench_function("math-conversions", |b| {
-            b.iter(|| {
-                let raw = black_box(123456u64);
-                let joules = (raw as f64) * 2.3283064365386962890625e-10;
-                let u_joules = (joules * 1000_000.0) as u64;
-                black_box(u_joules);
-            })
-        });
-    }
-    */
 }
 
 criterion_group!(benches, criterion_benchmark);

@@ -8,10 +8,14 @@ use std::{
     path::Path,
 };
 
+use crate::EnergyMeasurements;
+
 use super::{CpuId, EnergyProbe, RaplDomainType};
 
 // See https://github.com/torvalds/linux/commit/4788e5b4b2338f85fa42a712a182d8afd65d7c58
 // for an explaination of the RAPL PMU driver.
+
+pub(crate) const PERF_MAX_ENERGY: u64 = u64::MAX;
 
 #[derive(Debug)]
 pub struct PowerEvent {
@@ -144,6 +148,10 @@ pub fn all_power_events() -> Result<Vec<PowerEvent>> {
 
 /// Energy probe based on perf_event for intel RAPL.
 pub struct PerfEventProbe {
+    /// Stores the energy measurements
+    measurements: EnergyMeasurements,
+
+    /// Ready-to-use power events with additional metadata
     events: Vec<OpenedPowerEvent>,
 }
 
@@ -156,14 +164,12 @@ struct OpenedPowerEvent {
 
 impl PerfEventProbe {
     pub fn new(socket_cpus: &[CpuId], events: &[&PowerEvent]) -> anyhow::Result<PerfEventProbe> {
+        crate::check_socket_cpus(socket_cpus)?;
         let pmu_type = pmu_type()?;
         let mut opened = Vec::with_capacity(socket_cpus.len() * events.len());
         for CpuId { cpu, socket } in socket_cpus {
             for event in events {
-                let raw_fd = event.perf_event_open(
-                    pmu_type,
-                    *cpu,
-                )?;
+                let raw_fd = event.perf_event_open(pmu_type, *cpu)?;
                 let fd = unsafe { File::from_raw_fd(raw_fd) };
                 let scale = event.scale as f64;
                 opened.push(OpenedPowerEvent {
@@ -174,17 +180,31 @@ impl PerfEventProbe {
                 })
             }
         }
-        Ok(PerfEventProbe { events: opened })
+        Ok(PerfEventProbe {
+            measurements: EnergyMeasurements::new(socket_cpus.len()),
+            events: opened,
+        })
     }
 }
 
 impl EnergyProbe for PerfEventProbe {
-    fn read_consumed_energy(&mut self, to: &mut super::EnergyMeasurements) -> anyhow::Result<()> {
+    fn poll(&mut self) -> anyhow::Result<()> {
         for evt in &mut self.events {
-            let counter_value = read_perf_event(&mut evt.fd)?;
-            to.push(evt.socket, evt.domain, counter_value, evt.scale);
+            let counter_value = read_perf_event(&mut evt.fd)
+                .with_context(|| format!("failed to read perf_event {:?} for domain {:?}", evt.fd, evt.domain))?;
+
+            self.measurements
+                .push(evt.socket, evt.domain, counter_value, PERF_MAX_ENERGY, evt.scale);
         }
         Ok(())
+    }
+
+    fn measurements(&self) -> &crate::EnergyMeasurements {
+        &self.measurements
+    }
+    
+    fn reset(&mut self) {
+        self.measurements.clear()
     }
 }
 

@@ -1,7 +1,6 @@
-use std::{fs, num::ParseIntError};
+use std::{collections::HashSet, fmt, fs, num::ParseIntError, str::FromStr};
 
-use clap::ValueEnum;
-use enum_map::{self, Enum, EnumMap};
+use enum_map::{self, EnumMap};
 
 #[cfg(feature = "ebpf")]
 pub mod ebpf;
@@ -10,7 +9,8 @@ pub mod msr;
 pub mod perf_event;
 pub mod powercap;
 
-#[derive(Enum, Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+/// A known RAPL domain.
+#[derive(enum_map::Enum, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RaplDomainType {
     /// entire socket
     Package,
@@ -20,8 +20,29 @@ pub enum RaplDomainType {
     PP1,
     ///  DRAM
     Dram,
-    /// psys
+    /// psys (only available on recent client platforms like laptops)
     Platform,
+}
+
+impl fmt::Display for RaplDomainType {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        fmt::Debug::fmt(self, f)
+    }
+}
+
+impl FromStr for RaplDomainType {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "package" | "pkg" => Ok(RaplDomainType::Package),
+            "pp0" | "core" => Ok(RaplDomainType::PP0),
+            "pp1" | "uncore" => Ok(RaplDomainType::PP1),
+            "dram" | "ram" => Ok(RaplDomainType::Dram),
+            "platform" | "psys" => Ok(RaplDomainType::Platform),
+            _ => Err(s.to_owned()),
+        }
+    }
 }
 
 impl RaplDomainType {
@@ -44,19 +65,13 @@ impl RaplDomainType {
 
 pub trait EnergyProbe: Send {
     /// Updates the energy measurements.
-    ///
-    ///
-    /// ## Overflows
-    ///
-    /// RAPL counters overflow after some time, which depends on the consumption
-    /// of the monitored domain. This time can be lower than one minute.
-    /// To avoid losing data and reporting wrong measurements, no more than one overflow
-    /// must occur between two measurements. That is, the polling frequency must be high enough.
-    ///
-    /// If two consecutive calls return `true`, then the frequency is either too low,
-    /// or barely right (but that's risky).
-    ///
-    fn read_consumed_energy(&mut self, to: &mut EnergyMeasurements) -> anyhow::Result<()>;
+    fn poll(&mut self) -> anyhow::Result<()>;
+
+    /// Retrieves the latest measurements.
+    fn measurements(&self) -> &EnergyMeasurements;
+    
+    /// Resets the measurements.
+    fn reset(&mut self);
 }
 
 pub struct EnergyMeasurements {
@@ -65,12 +80,15 @@ pub struct EnergyMeasurements {
 
 #[derive(Default, Clone)]
 pub struct EnergyCounter {
-    /// The previous, raw value of the RAPL counter. The energy unit has not been applied yet.
-    previous_value: Option<u64>,
+    /// The previous, raw value of the counter (its range depends on the RAPL probe).
+    /// The energy unit has not been applied yet.
+    pub(crate) previous_value: Option<u64>,
 
     /// `true` if an overflow has occured in the last call of `read_consumed_energy`.
     pub overflowed: bool,
 
+    /// The energy consumed since the previous call to [EnergyProbe::poll], in Joules.
+    pub joules: Option<f64>,
     // NOTE: the energy can be a floating-point number in Joules,
     // without any loss of precision. Why? Because multiplying any number
     // by a float that is a power of two will only change the "exponent" part,
@@ -79,8 +97,6 @@ pub struct EnergyCounter {
     // A f32 can hold integers without any precision loss
     // up to approximately 2^24, which is not enough for the RAPL counter values,
     // so we use a f64 here.
-    /// The energy consumed since the previous call to `read_consumed_energy`, in Joules.
-    pub joules: Option<f64>,
 }
 
 impl EnergyMeasurements {
@@ -88,19 +104,27 @@ impl EnergyMeasurements {
         let v = vec![EnumMap::default(); socket_count];
         EnergyMeasurements { per_socket: v }
     }
-
-    pub fn domains_of_socket(&self, socket_id: u32) -> impl Iterator<Item = (RaplDomainType, &EnergyCounter)> {
-        self.per_socket[socket_id as usize].iter()
+    
+    pub fn clear(&mut self) {
+        for m in &mut self.per_socket {
+            m.clear();
+        }
     }
 
-    pub fn push(&mut self, socket_id: u32, domain: RaplDomainType, counter_value: u64, energy_unit: f64) {
+    pub fn push(
+        &mut self,
+        socket_id: u32,
+        domain: RaplDomainType,
+        counter_value: u64,
+        max_value: u64,
+        energy_unit: f64,
+    ) {
         let current = counter_value;
         let counter = &mut self.per_socket[socket_id as usize][domain];
         if let Some(prev) = counter.previous_value {
             if current < prev {
-                // one or more overflow have occured, we cannot know how many,
-                // so we correct only one.
-                let corrected = u64::MAX - prev + current;
+                // one or more overflow have occured, we cannot know how many, so we correct only one.
+                let corrected = max_value - prev + current;
                 counter.overflowed = true;
                 counter.joules = Some(corrected as f64 * energy_unit)
             } else {
@@ -171,6 +195,21 @@ fn parse_cpu_list(cpulist: &str) -> anyhow::Result<Vec<u32>> {
 pub fn online_cpus() -> anyhow::Result<Vec<u32>> {
     let list = fs::read_to_string("/sys/devices/system/cpu/online")?;
     parse_cpu_list(&list)
+}
+
+/// Checks that the given slice contains only one CPU per socket.
+pub(crate) fn check_socket_cpus(cpus: &[CpuId]) -> anyhow::Result<()> {
+    let mut seen_sockets: HashSet<u32> = HashSet::new();
+    for cpu_info in cpus {
+        let s = cpu_info.socket;
+        if !seen_sockets.insert(s) {
+            return Err(anyhow::anyhow!(
+                "At most one CPU should be given per socket, wrong cpus for socket {}",
+                s
+            ));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

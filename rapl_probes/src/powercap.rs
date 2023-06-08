@@ -8,7 +8,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::Context;
+use anyhow::{anyhow, Context};
+
+use crate::{EnergyMeasurements, CpuId};
 
 use super::{EnergyProbe, RaplDomainType};
 
@@ -16,8 +18,16 @@ const POWERCAP_RAPL_PATH: &str = "/sys/devices/virtual/powercap/intel-rapl";
 const POWER_ZONE_PREFIX: &str = "intel-rapl";
 const POWERCAP_ENERGY_UNIT: f64 = 0.000_001; // 1 microJoules
 
+/// Hierarchy of power zones
+pub struct PowerZoneHierarchy {
+    /// All the zones in the same Vec.
+    pub flat: Vec<PowerZone>,
+    /// The top zones. To access their children, use [PowerZone::children].
+    pub top: Vec<PowerZone>,
+}
+
 /// A power zone.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PowerZone {
     /// The name of the zone, as returned by powercap, for instance `package-0` or `core`.
     pub name: String,
@@ -36,7 +46,7 @@ pub struct PowerZone {
     /// The sub-zones (can be empty).
     pub children: Vec<PowerZone>,
 
-    /// The id of the socket that "contains" this zone, if applicable (psys has no zone)
+    /// The id of the socket that "contains" this zone, if applicable (psys has no socket)
     pub socket_id: Option<u32>,
 }
 
@@ -74,7 +84,7 @@ impl Display for PowerZone {
 }
 
 /// Discovers all the RAPL power zones in the powercap sysfs.
-pub fn all_power_zones() -> anyhow::Result<Vec<PowerZone>> {
+pub fn all_power_zones() -> anyhow::Result<PowerZoneHierarchy> {
     fn parse_zone_name(name: &str) -> Option<RaplDomainType> {
         match name {
             "psys" => Some(RaplDomainType::Platform),
@@ -87,7 +97,7 @@ pub fn all_power_zones() -> anyhow::Result<Vec<PowerZone>> {
     }
 
     /// Recursively explore a power zone
-    fn explore_rec(dir: &Path, parent_socket: Option<u32>) -> anyhow::Result<Vec<PowerZone>> {
+    fn explore_rec(dir: &Path, parent_socket: Option<u32>, flat: &mut Vec<PowerZone>) -> anyhow::Result<Vec<PowerZone>> {
         let mut zones = Vec::new();
         for e in fs::read_dir(dir)? {
             let entry = e?;
@@ -110,64 +120,85 @@ pub fn all_power_zones() -> anyhow::Result<Vec<PowerZone>> {
                     }
                 };
                 let domain = parse_zone_name(&name).with_context(|| format!("Unknown RAPL powercap zone {name}"))?;
-                let children = explore_rec(&path, socket_id)?; // recursively explore
-                zones.push(PowerZone {
+                let children = explore_rec(&path, socket_id, flat)?; // recursively explore
+                let zone = PowerZone {
                     name,
                     domain,
                     path,
                     children,
                     socket_id,
-                });
+                };
+                zones.push(zone.clone());
+                flat.push(zone);
             }
         }
         zones.sort_by_key(|z| z.path.to_string_lossy().to_string());
         Ok(zones)
     }
-    explore_rec(Path::new(POWERCAP_RAPL_PATH), None)
+    let mut flat = Vec::new();
+    let top = explore_rec(Path::new(POWERCAP_RAPL_PATH), None, &mut flat)?;
+    Ok(PowerZoneHierarchy { flat, top })
 }
 
 /// Powercap probe
 pub struct PowercapProbe<const CHECK_UTF8: bool> {
+    /// Stores the energy measurements
+    measurements: EnergyMeasurements,
+
+    /// Ready-to-use powercap zones with additional metadata
     zones: Vec<OpenedZone>,
-    buf_size_hint: usize,
 }
 
 struct OpenedZone {
     file: File,
-    buf_size_hint: usize,
     socket: u32,
     domain: RaplDomainType,
+    /// The maximum energy value for this zone, as reported by `max_energy_uj`
+    max_energy_uj: u64,
 }
 
 impl<const CHECK_UTF: bool> PowercapProbe<CHECK_UTF> {
-    pub fn new(zones: &[&PowerZone]) -> anyhow::Result<PowercapProbe<CHECK_UTF>> {
-        let opened = zones
-            .iter()
-            .map(|zone| {
-                let file = File::open(zone.energy_path())?;
-                let buf_size_hint = fs::read_to_string(zone.max_energy_path())?.len();
-                // the size of the content of `energy_uj` should not exceed those of `max_energy_uj`
+    pub fn new(socket_cpus: &[CpuId], zones: &[&PowerZone]) -> anyhow::Result<PowercapProbe<CHECK_UTF>> {
+        if zones.is_empty() {
+            return Err(anyhow!("At least one power zone is required for PowercapProbe"))?;
+        }
+        crate::check_socket_cpus(socket_cpus)?;
 
-                Ok(OpenedZone {
-                    file,
-                    buf_size_hint,
-                    socket: zone.socket_id.unwrap_or(0),
-                    domain: zone.domain,
-                })
+        let mut opened = Vec::new();
+
+        for zone in zones {
+            let file = File::open(zone.energy_path())
+                .with_context(|| format!("open {}", zone.energy_path().to_string_lossy()))?;
+
+            let str_max_energy_uj = fs::read_to_string(zone.max_energy_path())
+                .with_context(|| format!("read {}", zone.max_energy_path().to_string_lossy()))?;
+
+            let max_energy_uj = str_max_energy_uj
+                .trim_end()
+                .parse()
+                .with_context(|| format!("parse max_energy_uj: '{str_max_energy_uj}'"))?;
+
+            opened.push(OpenedZone {
+                file,
+                max_energy_uj,
+                socket: zone.socket_id.unwrap_or(0), // put psys in socket 0
+                domain: zone.domain,
             })
-            .collect::<anyhow::Result<Vec<OpenedZone>>>()?;
-        let buf_size_hint = opened.iter().map(|z| z.buf_size_hint).max().unwrap();
+        }
+
         Ok(PowercapProbe {
+            measurements: EnergyMeasurements::new(socket_cpus.len()),
             zones: opened,
-            buf_size_hint,
         })
     }
 }
 
 impl<const CHECK_UTF: bool> EnergyProbe for PowercapProbe<CHECK_UTF> {
-    fn read_consumed_energy(&mut self, to: &mut super::EnergyMeasurements) -> anyhow::Result<()> {
+    fn poll(&mut self) -> anyhow::Result<()> {
         // reuse the same buffer for all the zones
-        let mut buf = Vec::with_capacity(self.buf_size_hint);
+        // the size of the content of the file `energy_uj` should never exceed those of `max_energy_uj`,
+        // which is 16 bytes on all our test machines
+        let mut buf = Vec::with_capacity(16);
 
         for zone in &mut self.zones {
             // read the file from the beginning
@@ -180,19 +211,31 @@ impl<const CHECK_UTF: bool> EnergyProbe for PowercapProbe<CHECK_UTF> {
             } else {
                 unsafe { std::str::from_utf8_unchecked(&buf) }
             };
-            let counter_value: u64 = content.trim_end().parse()?;
-            
-            // NOTE: Powercap returns the value of the MSR modified in the following way:
-            // TODO explain the computation
-            // See: https://github.com/torvalds/linux/blob/9e87b63ed37e202c77aa17d4112da6ae0c7c097c/drivers/powercap/intel_rapl_common.c#L167
-            
-            // store the value
-            to.push(zone.socket, zone.domain, counter_value, POWERCAP_ENERGY_UNIT);
-            
+            let counter_value: u64 = content.trim_end().parse().with_context(|| format!("failed to parse {:?}: '{content}'", zone.file))?;
+
+            // store the value, handle the overflow if there is one
+            log::debug!("pushing {}/{} value {counter_value}", zone.socket, zone.domain);
+
+            self.measurements.push(
+                zone.socket,
+                zone.domain,
+                counter_value,
+                zone.max_energy_uj, // the maximum energy depends on the zone
+                POWERCAP_ENERGY_UNIT,
+            );
+
             // clear the buffer, so that we can fill it again
-            buf.clear();   
+            buf.clear();
         }
         Ok(())
+    }
+
+    fn measurements(&self) -> &crate::EnergyMeasurements {
+        &self.measurements
+    }
+    
+    fn reset(&mut self) {
+        self.measurements.clear()
     }
 }
 
@@ -203,8 +246,13 @@ mod tests {
     #[test]
     fn test_powercap() {
         let zones = all_power_zones().expect("failed to get powercap power zones");
-        for z in zones {
+        println!("---- Hierarchy ----");
+        for z in zones.top {
             println!("{z}");
+        }
+        println!("---- Flat list ----");
+        for z in zones.flat {
+            println!("{z}")
         }
     }
 }

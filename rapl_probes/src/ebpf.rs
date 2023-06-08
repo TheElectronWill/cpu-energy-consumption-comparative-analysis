@@ -1,6 +1,4 @@
-use std::collections::HashSet;
-
-use anyhow::{anyhow, Context};
+use anyhow::Context;
 use aya::maps::perf::PerfEventArrayBuffer;
 use aya::maps::{Array, MapData, PerfEventArray};
 use aya::programs::{self, PerfEvent};
@@ -10,12 +8,13 @@ use aya_log::BpfLogger;
 use bytes::BytesMut;
 use log::{debug, warn};
 
+use ebpf_common::RaplEnergy;
+use crate::{perf_event, EnergyMeasurements};
 use super::perf_event::{pmu_type, PowerEvent};
 use super::{CpuId, EnergyProbe, RaplDomainType};
 
 // See EbpfProbe::new
 const BUF_PAGE_COUNT: usize = 8;
-const EVENT_BYTE_COUNT: usize = 8;
 
 /// EBPF perf event probe.
 pub struct EbpfProbe {
@@ -25,18 +24,26 @@ pub struct EbpfProbe {
 
     /// The buffers that receive the values of the energy counters from the EBPF program
     buffers: Vec<EbpfEnergyBuffer>,
+
+    /// Stores the energy measurements
+    measurements: EnergyMeasurements,
+}
+
+#[derive(Debug)]
+struct DomainInfo {
+    domain: RaplDomainType,
+    scale: f32,
 }
 
 struct EbpfEnergyBuffer {
     buf: PerfEventArrayBuffer<MapData>,
-    scale: f64,
-    socket: u32,
-    domain: RaplDomainType,
+    cpu: CpuId,
+    domains_by_id: Vec<DomainInfo>,
 }
 
 impl EbpfProbe {
     pub fn new(cpus: &[CpuId], events: &[&PowerEvent], freq_hz: u64) -> anyhow::Result<EbpfProbe> {
-        check_socket_cpus(cpus)?;
+        crate::check_socket_cpus(cpus)?;
 
         let mut bpf = prepare_ebpf_probe(cpus, events, freq_hz)?;
 
@@ -53,64 +60,75 @@ impl EbpfProbe {
 
         // open every event for each cpu
         let mut buffers = Vec::new();
-        for CpuId { cpu, socket } in cpus {
-            for (i, event) in events.iter().enumerate() {
-                let index = cpu + i as u32;
-                let buf = events_array.open(index, pages).context("failed to open event array")?;
-                buffers.push(EbpfEnergyBuffer {
-                    buf,
-                    scale: event.scale as f64,
-                    socket: *socket,
-                    domain: event.domain,
-                })
-            }
+        for c @ CpuId { cpu, socket } in cpus {
+            let index = *cpu;
+            let domains_by_id = events.into_iter().map(|evt| DomainInfo{domain: evt.domain, scale: evt.scale}).collect();
+            
+            debug!("Opening EVENTS[{index}] for domains {domains_by_id:?}");
+            let buf = events_array.open(index, pages).context("failed to open event array")?;
+
+            buffers.push(EbpfEnergyBuffer {
+                buf,
+                cpu: *c,
+                domains_by_id,
+            })
         }
-        Ok(EbpfProbe { _bpf: bpf, buffers })
+        Ok(EbpfProbe {
+            _bpf: bpf,
+            buffers,
+            measurements: EnergyMeasurements::new(cpus.len()),
+        })
     }
 }
 
 impl EnergyProbe for EbpfProbe {
-    fn read_consumed_energy(&mut self, measurements: &mut super::EnergyMeasurements) -> anyhow::Result<()> {
-        let mut out_bufs: [BytesMut; BUF_PAGE_COUNT] = std::array::from_fn(|_| BytesMut::zeroed(EVENT_BYTE_COUNT));
+    fn poll(&mut self) -> anyhow::Result<()> {
+        let mut out_bufs: [BytesMut; BUF_PAGE_COUNT] = std::array::from_fn(|_| BytesMut::new());
 
         for energy_buf in &mut self.buffers {
             // read data from the perf event array, if possible
-            let input = &mut energy_buf.buf;
-            if input.readable() {
+            let input_buf = &mut energy_buf.buf;
+            if input_buf.readable() {
                 // this will clear the buffers and copy the pending events into them
-                let events_stats = input.read_events(&mut out_bufs).expect("failed to poll events");
+                let events_stats = input_buf.read_events(&mut out_bufs).expect("failed to poll events");
                 debug_assert_eq!(events_stats.lost, 0);
 
-                // parse the energy counter from the bytes that have been read
-                for i_event in 0..events_stats.read {
-                    let data = &out_bufs[i_event];
-                    let len = data.len();
-                    debug!("polled bufs[{i_event}] = {data:x} (len {len})");
-                    // debug_assert_eq!(len, EVENT_BYTE_COUNT); not true
+                // parse the energy counter (and more) from the bytes that have been read
+                // See another example at https://github.com/aya-rs/book/blob/4aa9a5b38a0d4b6a05debcb213e5540820eda1fd/examples/cgroup-skb-egress/cgroup-skb-egress/src/main.rs#L68
+                for data_buf in out_bufs.iter_mut().take(events_stats.read) {
+                    let len = data_buf.len();
+                    debug!("polled data from out_bufs = {data_buf:x} (len {len})");
 
-                    let counter_value = u64::from_ne_bytes(data[..EVENT_BYTE_COUNT].try_into()?);
-                    debug!("=> raw counter value {counter_value}");
+                    // the ebpf program pushes pointers to RaplEnergy structs,
+                    // we convert the pointer type and read the struct from it
+                    let ptr = data_buf.as_ptr() as *const RaplEnergy;
+                    let data: RaplEnergy = unsafe { ptr.read_unaligned() };
+                    debug!("=> data for cpu {} domain {} = {}", data.cpu_id, data.domain_id, data.energy);
 
-                    measurements.push(energy_buf.socket, energy_buf.domain, counter_value, energy_buf.scale);
+                    let rapl_domain_info = &energy_buf.domains_by_id[data.domain_id as usize];
+
+                    self.measurements.push(
+                        energy_buf.cpu.socket,
+                        rapl_domain_info.domain,
+                        data.energy,
+                        perf_event::PERF_MAX_ENERGY,
+                        rapl_domain_info.scale as f64,
+                    );
                 }
+            } else {
+                debug!("buffer of cpu {:?} is not readable (if this occurs once at the beginning, this is not a problem)", energy_buf.cpu);
             }
         }
         Ok(())
     }
-}
 
-fn check_socket_cpus(cpus: &[CpuId]) -> anyhow::Result<()> {
-    let mut seen_sockets: HashSet<u32> = HashSet::new();
-    for cpu_info in cpus {
-        let s = cpu_info.socket;
-        if !seen_sockets.insert(s) {
-            return Err(anyhow!(
-                "At most one CPU should be given per socket, wrong cpus for socket {}",
-                s
-            ));
-        }
+    fn measurements(&self) -> &crate::EnergyMeasurements {
+        &self.measurements
     }
-    Ok(())
+    
+    fn reset(&mut self) {
+        self.measurements.clear()
+    }
 }
 
 /// Loads the BPF bytecode from the compilation result of the "ebpf" module.
@@ -139,7 +157,9 @@ fn prepare_ebpf_probe(socket_cpus: &[CpuId], events: &[&PowerEvent], freq_hz: u6
     // fill N_EVENTS
     {
         let mut n_array = Array::try_from(bpf.map_mut("N_EVENTS").expect("map not found: N_EVENTS"))?;
-        n_array.set(0, events.len() as i8, 0)?;
+        let n = i8::try_from(events.len()).with_context(|| format!("too many events: {}", events.len()))?;
+        n_array.set(0, n, 0)?;
+        debug!("N_EVENTS[0] = {n}");
     }
 
     // fill DESCRIPTORS
@@ -155,6 +175,7 @@ fn prepare_ebpf_probe(socket_cpus: &[CpuId], events: &[&PowerEvent], freq_hz: u6
                 let fd = event.perf_event_open(pmu_type, cpu_id)?;
                 let index = cpu_id + i as u32;
                 fd_array.set(index, fd)?;
+                debug!("DESCRIPTORS[{index}] = {fd:?}");
             }
         }
     }

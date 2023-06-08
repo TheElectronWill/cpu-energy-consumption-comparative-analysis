@@ -11,6 +11,8 @@ use std::{
 use anyhow::{anyhow, Context};
 use regex::Regex;
 
+use crate::EnergyMeasurements;
+
 use super::{CpuId, EnergyProbe, RaplDomainType};
 
 type Addr = u64;
@@ -19,11 +21,11 @@ type Addr = u64;
 mod intel {
     use super::Addr;
 
-    pub const MSR_RAPL_POWER_UNIT: Addr        = 0x00000606;
-    pub const MSR_PKG_ENERGY_STATUS: Addr      = 0x00000611;
-    pub const MSR_PP0_ENERGY_STATUS: Addr      = 0x00000639;
-    pub const MSR_PP1_ENERGY_STATUS: Addr      = 0x00000641;
-    pub const MSR_DRAM_ENERGY_STATUS: Addr     = 0x00000619;
+    pub const MSR_RAPL_POWER_UNIT: Addr = 0x00000606;
+    pub const MSR_PKG_ENERGY_STATUS: Addr = 0x00000611;
+    pub const MSR_PP0_ENERGY_STATUS: Addr = 0x00000639;
+    pub const MSR_PP1_ENERGY_STATUS: Addr = 0x00000641;
+    pub const MSR_DRAM_ENERGY_STATUS: Addr = 0x00000619;
     pub const MSR_PLATFORM_ENERGY_STATUS: Addr = 0x0000064D;
 }
 
@@ -36,6 +38,13 @@ mod amd {
     pub const MSR_PKG_ENERGY_STATUS: Addr = 0xc001029b;
 }
 
+/// Mask to apply when reading the energy values
+const MSR_ENERGY_MASK: Addr = 0xffffffff;
+
+/// Maximum value of the MSR counter.
+/// Note that this technically depends on the exact hardware, but for our purposes it's good enough.
+const MSR_MAX_ENERGY: u64 = u32::MAX as u64;
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum RaplVendor {
     Intel,
@@ -44,6 +53,10 @@ pub enum RaplVendor {
 
 /// Reads the RAPL MSR values (via /dev/cpu/<cpu_id>/msr for one CPU per socket).
 pub struct MsrProbe {
+    /// Stores the energy measurements
+    measurements: EnergyMeasurements,
+
+    /// MSR file descriptors for each cpu
     msr_per_cpu: Vec<RaplMsrAccess>,
 
     /// The MSR RAPL registers to read for each descriptor
@@ -51,7 +64,7 @@ pub struct MsrProbe {
 }
 
 struct RaplMsrDomain {
-    typ: RaplDomainType,
+    domain: RaplDomainType,
     addr: Addr,
 }
 
@@ -65,19 +78,33 @@ struct RaplMsrAccess {
 }
 
 impl EnergyProbe for MsrProbe {
-    fn read_consumed_energy(&mut self, to: &mut super::EnergyMeasurements) -> anyhow::Result<()> {
-        for msr in &self.msr_per_cpu {
-            for RaplMsrDomain { typ, addr } in &self.domains {
-                let counter_value = read_msr(&msr.fd, *addr)?;
-                to.push(msr.socket_id, *typ, counter_value, msr.energy_unit);
+    fn poll(&mut self) -> anyhow::Result<()> {
+        for msr in &mut self.msr_per_cpu {
+            for RaplMsrDomain { domain, addr } in &self.domains {
+                let msr_value = read_msr(&msr.fd, *addr)
+                    .with_context(|| format!("failed to read MSR {addr} for domain {domain:?}"))?;
+
+                let counter_value = msr_value & MSR_ENERGY_MASK;
+
+                self.measurements
+                    .push(msr.socket_id, *domain, counter_value, MSR_MAX_ENERGY, msr.energy_unit);
             }
         }
         Ok(())
+    }
+
+    fn measurements(&self) -> &EnergyMeasurements {
+        &self.measurements
+    }
+    
+    fn reset(&mut self) {
+        self.measurements.clear()
     }
 }
 
 impl MsrProbe {
     pub fn new(cpus: &[CpuId], domains: &[RaplDomainType]) -> anyhow::Result<MsrProbe> {
+        crate::check_socket_cpus(cpus)?;
         let vendor = cpu_vendor()?;
         let msr_per_cpu = cpus
             .iter()
@@ -97,13 +124,17 @@ impl MsrProbe {
             .iter()
             .map(|d| {
                 Ok(RaplMsrDomain {
-                    typ: *d,
+                    domain: *d,
                     addr: domain_msr_address(*d, vendor).context("RAPL domain should exist in MSR")?,
                 })
             })
             .collect::<anyhow::Result<Vec<RaplMsrDomain>>>()?;
 
-        Ok(MsrProbe { msr_per_cpu, domains })
+        Ok(MsrProbe {
+            measurements: EnergyMeasurements::new(cpus.len()),
+            msr_per_cpu,
+            domains,
+        })
     }
 }
 

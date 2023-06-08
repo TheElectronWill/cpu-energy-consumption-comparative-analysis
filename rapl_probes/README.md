@@ -3,7 +3,7 @@
 ## MSR
 
 RAPL est exposé par le biais de Model Specific Registers, ou MSR.
-Ces registres sont documentés dans le _Intel Software Developer Manual, volume 3B_, chapitre _Power and Thermal Management_, section _15.10.1 RAPL interfaces_.
+Ces registres sont documentés dans le _Intel Software Developer Manual, volume 3B_, chapitre _Power and Thermal Management_, section _15.10.1 - RAPL interfaces_.
 
 Le registre 64 bits `MSR_RAPL_POWER_UNIT` donne les unités des compteurs RAPL.
 Celui qui nous intéresse est _Energy Status Unit_ ou `ESU`, stockés dans les bits 12 à 8.
@@ -44,13 +44,13 @@ TODO explications générales
 
 ### Calcul du compteur et overflow
 
-L'interface perf [semble calculer la différence](https://github.com/torvalds/linux/blob/921bdc72a0d68977092d6a64855a1b8967acc1d9/arch/x86/events/rapl.c#LL200C2-L200C2) entre le compteur courant et sa valeur précédente.
+L'interface perf [semble calculer la différence](https://github.com/torvalds/linux/blob/921bdc72a0d68977092d6a64855a1b8967acc1d9/arch/x86/events/rapl.c#LL200C2-L200C2) entre le compteur courant et sa valeur précédente, avant de l'ajouter au compteur de l'évènement exposé. Nos tests confirment que la valeur exposée par l'interface est un [entier 64 bits](https://lwn.net/Articles/573602/).
 
 Correction d'overflow :
 $$
 \Delta m =
 \begin{cases}
-  \text{u32::max} - m_{prev} + m_{current} &\text{si}\ m_{current} < m_{prev} \\
+  \text{u64::max} - m_{prev} + m_{current} &\text{si}\ m_{current} < m_{prev} \\
   m_{current} - m_{prev} &\text{sinon} \\
 \end{cases}
 $$
@@ -84,7 +84,7 @@ Pour chaque zone, on a :
 
 ### Calcul du compteur et overflow
 
-Le compteur de powercap est calculé à la demande à partir du compteur MSR,  qui est converti en Joules avec la "bonne" unité (sélectionnée en fonction du domaine et du type de matériel).
+Le compteur de powercap est calculé à la demande à partir du compteur MSR,  qui est converti en Joules avec la "bonne" unité ([sélectionnée en fonction du domaine et du type de matériel](https://github.com/torvalds/linux/blob/9e87b63ed37e202c77aa17d4112da6ae0c7c097c/drivers/powercap/intel_rapl_common.c#L167)).
 
 $e_{uj} = \text{msr\_to\_joules}(m) \times 1000$
 
