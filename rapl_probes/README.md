@@ -40,7 +40,31 @@ Puisqu'il est cumulatif, il faut prendre deux mesures avec un petit intervalle d
 
 ## Perf event
 
-TODO explications générales
+Linux fournit une interface "Performance events" qui donne accès, entre autres, aux compteurs de performance du CPU. Les registres RAPL font partie de ces compteurs.
+
+Une description des évènements correspondants aux registres d'énergie RAPL est disponible dans `/sys/devices/power/events/`, qui contient 3 fichier par évènement, un évènement par domaine RAPL. Exemple :
+
+- energy-cores
+- energy-cores.scale
+- energy-cores.unit
+- energy-gpu
+- energy-gpu.scale
+- energy-gpu.unit
+- energy-pkg
+- energy-pkg.scale
+- energy-pkg.unit
+- energy-psys
+- energy-psys.scale
+- energy-psys.unit
+- energy-ram
+- energy-ram.scale
+- energy-ram.unit
+
+Le fichier sans suffixe (ex. `energy-cores`) contient l'id de l'évènement perf, par exemple `event=0x02`.
+Le fichier avec le suffixe `.scale` contient le facteur à appliquer aux valeurs du compteur pour obtenir des valeurs en Joules.
+Le fichier avec le suffixe `.unit` contient `Joules`, ce qui confirme que les valeurs (après application du facteur d'échelle) sont en Joules.
+
+Pour lire les valeurs des registres via perf_event, il faut ouvrir les évènements correspondants avec [`perf_event_open`](https://man7.org/linux/man-pages/man2/perf_event_open.2.html). Le "type de pmu" demandé par cette fonction peut changer en fonction des machines, il s'obtient en lisant le fichier `/sys/devices/power/type`.
 
 ### Calcul du compteur et overflow
 

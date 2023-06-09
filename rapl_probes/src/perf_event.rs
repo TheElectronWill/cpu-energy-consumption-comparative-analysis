@@ -13,7 +13,7 @@ use crate::EnergyMeasurements;
 use super::{CpuId, EnergyProbe, RaplDomainType};
 
 // See https://github.com/torvalds/linux/commit/4788e5b4b2338f85fa42a712a182d8afd65d7c58
-// for an explaination of the RAPL PMU driver.
+// for an explanation of the RAPL PMU driver.
 
 pub(crate) const PERF_MAX_ENERGY: u64 = u64::MAX;
 

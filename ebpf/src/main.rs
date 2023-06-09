@@ -56,7 +56,7 @@ fn read_and_push_counter(ctx: &PerfEventContext, cpu_id: u32, domain_id: u8) -> 
     let value = unsafe { DESCRIPTORS.read_at_index(read_index) }.map_err(|e| ("read", e))?;
     let energy = value.counter;
     
-    #[cfg(debug_assertions)]
+    #[cfg(debug_assertions)] // remove the line in release mode
     debug!(ctx, "got value {} from fd DESCRIPTORS[{}]", energy, read_index);
 
     // push the value to userspace (this internally calls bpf_perf_event_output)
