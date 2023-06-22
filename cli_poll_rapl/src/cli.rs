@@ -27,11 +27,15 @@ pub enum Commands {
 
         /// Measurement frequency, in Hertz.
         #[arg(short, long)]
-        frequency: u64,
+        frequency: i64,
 
         /// Print energy measurements on each iteration.
         #[arg(short, long, value_enum)]
         output: OutputType,
+        
+        /// Sets the output file, if output if set to file.
+        #[arg(long)]
+        output_file: Option<String>,
     },
 }
 

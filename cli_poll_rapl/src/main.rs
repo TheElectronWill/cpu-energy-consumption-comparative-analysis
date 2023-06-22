@@ -4,7 +4,7 @@ use rapl_probes::perf_event::PowerEvent;
 use rapl_probes::powercap::{PowerZone, PowerZoneHierarchy};
 use std::fs::File;
 use std::io::{BufWriter, Write};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 
@@ -61,7 +61,20 @@ async fn main() -> Result<(), anyhow::Error> {
             domains,
             frequency,
             output,
+            output_file,
         } => {
+            // compute the polling period, or stop if zero
+            let polling_period = Duration::from_secs_f64({
+                match frequency {
+                    0 => {
+                        info!("Frequency set to zero, stopping here.");
+                        return Ok(())
+                    }, // no polling at all, stop here
+                    f if f < 0 => 0.0, // continuous polling
+                    f => 1.0 / f as f64,
+                }
+            });
+
             // filter the domains according to the command-line arguments
             if !domains.iter().all(|d| available_domains.contains(d)) {
                 return Err(anyhow!("Invalid selected domains: {}", mkstring(&domains, ", ")));
@@ -88,7 +101,7 @@ async fn main() -> Result<(), anyhow::Error> {
                     Box::new(p)
                 }
                 ProbeType::Ebpf => {
-                    let p = ebpf::EbpfProbe::new(&socket_cpus, &filtered_events, frequency)?;
+                    let p = ebpf::EbpfProbe::new(&socket_cpus, &filtered_events, frequency as u64)?;
                     Box::new(p)
                 }
                 ProbeType::Msr => {
@@ -97,28 +110,26 @@ async fn main() -> Result<(), anyhow::Error> {
                 }
             };
 
-            // Query the probe at the given frequency, in another thread
-            let polling_period = Duration::from_secs_f64({
-                if frequency == 0 {
-                    0.0
-                } else {
-                    1.0 / frequency as f64
-                }
-            });
-
+            // prepare the output, if any
             let writer: Option<Box<dyn Write>> = match output {
                 OutputType::None => None,
                 OutputType::Stdout => Some(Box::new(std::io::stdout())),
                 OutputType::File => {
-                    // create the csv file
-                    let filename = OffsetDateTime::now_utc().format(&Rfc3339)?;
+                    let filename = 
+                        if let Some(f) = output_file {
+                            f
+                        } else {
+                            // create the csv file
+                            let now = OffsetDateTime::now_utc().format(&Rfc3339)?;
+                            format!("poll-{now}.csv")
+                        };
                     let file = File::create(filename)?;
                     let writer = BufWriter::new(file);
                     // return the writer
                     Some(Box::new(writer))
                 }
             };
-
+            
             // Poll the probe (if any) at regular intervals
             poll_energy_probe(probe.as_mut(), polling_period, writer)
                 .await
@@ -136,9 +147,10 @@ async fn poll_energy_probe(
 ) -> anyhow::Result<()> {
     // write the csv header
     if let Some(w) = &mut writer {
-        w.write("socket;domain;overflow;joules\n".as_bytes())?;
+        w.write("timestamp_ms;socket;domain;overflow;joules\n".as_bytes())?;
     }
 
+    let mut previous_timestamp = unix_timestamp_millis()?;
     loop {
         // sleep before the first measurement, because the eBPF program has probably
         // not been triggered by the clock event yet
@@ -150,7 +162,14 @@ async fn poll_energy_probe(
 
         // (optional) print values
         if let Some(w) = &mut writer {
-            print_measurements(measurements, w).context("printing measurements")?;
+            let timestamp = unix_timestamp_millis()?;
+            print_measurements(measurements, timestamp, w).context("printing measurements")?;
+            
+            // Flush the write buffer every second
+            if timestamp - previous_timestamp >= 1000 {
+                previous_timestamp = timestamp;
+                w.flush()?;
+            }
         }
 
         // prevent the compiler from removing the measurement
@@ -158,12 +177,17 @@ async fn poll_energy_probe(
     }
 }
 
-fn print_measurements(m: &EnergyMeasurements, writer: &mut dyn Write) -> anyhow::Result<()> {
+fn unix_timestamp_millis() -> anyhow::Result<u128> {
+    let d = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)?;
+    Ok(d.as_millis())
+}
+
+fn print_measurements(m: &EnergyMeasurements, timestamp: u128, writer: &mut dyn Write) -> anyhow::Result<()> {
     for (socket_id, domains_of_socket) in m.per_socket.iter().enumerate() {
         for (domain, counter) in domains_of_socket {
             if let Some(consumed) = counter.joules {
                 let overflow = counter.overflowed;
-                writer.write(format!("{socket_id};{domain:?};{overflow};{consumed}\n").as_bytes())?;
+                writer.write(format!("{timestamp};{socket_id};{domain:?};{overflow};{consumed}\n").as_bytes())?;
             }
         }
     }
@@ -174,10 +198,12 @@ fn check_domains_consistency(perf_events: &[PowerEvent], power_zones: &PowerZone
     // get all the domains available via perf-events
     let mut perf_rapl_domains: Vec<RaplDomainType> = perf_events.iter().map(|e| e.domain).collect();
     perf_rapl_domains.sort_by_key(|k| k.to_string());
+    perf_rapl_domains.dedup_by_key(|k| k.to_string());
 
     // get all the domains available via Powercap
     let mut powercap_rapl_domains: Vec<RaplDomainType> = power_zones.flat.iter().map(|z| z.domain).collect();
     powercap_rapl_domains.sort_by_key(|k| k.to_string());
+    powercap_rapl_domains.dedup_by_key(|k| k.to_string());
 
     if perf_rapl_domains != powercap_rapl_domains {
         warn!("Powercap and perf-event don't report the same RAPL domains. This may be due to a bug in powercap or in perf-event.");
