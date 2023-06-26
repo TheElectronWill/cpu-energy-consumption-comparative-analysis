@@ -60,7 +60,7 @@ impl EbpfProbe {
 
         // open every event for each cpu
         let mut buffers = Vec::new();
-        for c @ CpuId { cpu, socket } in cpus {
+        for c @ CpuId { cpu, socket: _ } in cpus {
             let index = *cpu;
             let domains_by_id = events.into_iter().map(|evt| DomainInfo{domain: evt.domain, scale: evt.scale}).collect();
             

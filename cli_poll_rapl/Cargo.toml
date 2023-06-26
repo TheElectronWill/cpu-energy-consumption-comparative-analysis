@@ -15,9 +15,13 @@ anyhow = "1"
 clap = "4.2.1"
 env_logger = "0.10"
 regex = "1.7.3"
-tokio = { version = "1.25", features = ["macros", "rt", "rt-multi-thread", "net", "signal", "time"] }
+tokio = { version = "1.25", features = ["macros", "rt", "rt-multi-thread", "sync"] }
 time = { version = "0.3.21", features = ["formatting"] }
 procfs = "0.15.1"
+
+# Use timerfd to get a high-precision timer (unlike tokio::time::sleep or std::time::sleep)
+tokio-timerfd = "0.2.0"
+futures = "0.3.28"
 
 [dev-dependencies]
 criterion = { version = "0.4", features = ["html_reports", "async_tokio"] }

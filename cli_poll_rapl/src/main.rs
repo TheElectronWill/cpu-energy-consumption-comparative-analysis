@@ -1,15 +1,20 @@
-use anyhow::{anyhow, Context};
-use clap::Parser;
 use rapl_probes::perf_event::PowerEvent;
 use rapl_probes::powercap::{PowerZone, PowerZoneHierarchy};
+
+use anyhow::{anyhow, Context};
+use clap::Parser;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::time::{Duration, SystemTime};
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 
+use futures::stream::StreamExt;
+use tokio::sync::mpsc::{self, Sender};
+use tokio_timerfd::Interval;
+
 use cli::{Cli, Commands, OutputType, ProbeType};
-use log::{debug, info, warn};
+use log::{info, warn};
 use rapl_probes::{
     ebpf,
     msr::{self, RaplVendor},
@@ -18,8 +23,11 @@ use rapl_probes::{
 
 mod cli;
 
+const MEASUREMENTS_FLUSH_INTERVAL: Duration = Duration::from_secs(1);
+const WRITER_BUFFER_CAPACITY: usize = 8192 * 10;
+
 // A tokio runtime is required for aya ebpf
-#[tokio::main(worker_threads = 1)]
+#[tokio::main(worker_threads = 2)]
 async fn main() -> Result<(), anyhow::Error> {
     // initialize logger
     let env = env_logger::Env::default().default_filter_or("info");
@@ -68,8 +76,8 @@ async fn main() -> Result<(), anyhow::Error> {
                 match frequency {
                     0 => {
                         info!("Frequency set to zero, stopping here.");
-                        return Ok(())
-                    }, // no polling at all, stop here
+                        return Ok(());
+                    } // no polling at all, stop here
                     f if f < 0 => 0.0, // continuous polling
                     f => 1.0 / f as f64,
                 }
@@ -111,83 +119,110 @@ async fn main() -> Result<(), anyhow::Error> {
             };
 
             // prepare the output, if any
-            let writer: Option<Box<dyn Write>> = match output {
-                OutputType::None => None,
-                OutputType::Stdout => Some(Box::new(std::io::stdout())),
+            let mut writer: Box<dyn Write + Send> = match output {
+                OutputType::None => Box::new(std::io::sink()),
+                OutputType::Stdout => Box::new(BufWriter::with_capacity(WRITER_BUFFER_CAPACITY, std::io::stdout())),
                 OutputType::File => {
-                    let filename = 
-                        if let Some(f) = output_file {
-                            f
-                        } else {
-                            // create the csv file
-                            let now = OffsetDateTime::now_utc().format(&Rfc3339)?;
-                            format!("poll-{now}.csv")
-                        };
+                    let filename = if let Some(f) = output_file {
+                        f
+                    } else {
+                        // create the csv file
+                        let now = OffsetDateTime::now_utc().format(&Rfc3339)?;
+                        format!("poll-{now}.csv")
+                    };
                     let file = File::create(filename)?;
-                    let writer = BufWriter::new(file);
+                    let writer = BufWriter::with_capacity(WRITER_BUFFER_CAPACITY, file);
                     // return the writer
-                    Some(Box::new(writer))
+                    Box::new(writer)
                 }
             };
-            
-            // Poll the probe (if any) at regular intervals
-            poll_energy_probe(probe.as_mut(), polling_period, writer)
+
+            // open a Channel to write to the output in another thread
+            let (tx, mut rx) = mpsc::channel::<MeasurementsMessage>(4096);
+
+            // Start the writer task, which will receive the data from the channel and write
+            // it to the selected output.
+            let handle = tokio::spawn(async move {
+                let mut previous_timestamp: SystemTime = SystemTime::now();
+
+                // write the csv header
+                writer.write("timestamp_ms;socket;domain;overflow;joules\n".as_bytes())?;
+
+                while let Some(msg) = rx.recv().await {
+                    print_measurements(&mut writer, &msg)?;
+
+                    let time_since_last_flush = msg
+                        .timestamp
+                        .duration_since(previous_timestamp)
+                        .unwrap_or(Duration::ZERO);
+
+                    if time_since_last_flush >= MEASUREMENTS_FLUSH_INTERVAL {
+                        previous_timestamp = msg.timestamp;
+                        writer.flush()?;
+                    }
+                }
+
+                anyhow::Ok(())
+            });
+
+            // Start the polling task, which will poll the RAPL counters at regular intervals
+            // and send the data to the writer task, through the channel.
+            poll_energy_probe(probe.as_mut(), polling_period, tx)
                 .await
                 .expect("probe error");
+
+            handle.await?.expect("writer task error");
         }
     }
 
     Ok(())
 }
 
+#[derive(Debug)]
+struct MeasurementsMessage {
+    timestamp: SystemTime,
+    measurements: EnergyMeasurements,
+}
+
 async fn poll_energy_probe(
     probe: &mut dyn EnergyProbe,
     period: Duration,
-    mut writer: Option<Box<dyn Write>>,
+    tx: Sender<MeasurementsMessage>,
 ) -> anyhow::Result<()> {
-    // write the csv header
-    if let Some(w) = &mut writer {
-        w.write("timestamp_ms;socket;domain;overflow;joules\n".as_bytes())?;
-    }
+    // Underneath, this uses a periodic timer from timerfd, which has a higher resolution than std::time::sleep and tokio::time::sleep
+    // Also, using an interval is better than using a `Delay` by hand
+    // (for 1000Hz, we get close to 999Hz with the Interval but only around 860Hz with the Delay).
+    let mut interval = Interval::new_interval(period)?;
 
-    let mut previous_timestamp = unix_timestamp_millis()?;
     loop {
-        // sleep before the first measurement, because the eBPF program has probably
-        // not been triggered by the clock event yet
-        tokio::time::sleep(period).await;
+        // wait for the next tick of the periodic timer
+        interval.next().await;
 
         // poll the new values from the probe
         probe.poll().context("refreshing measurements")?;
-        let measurements = probe.measurements();
+        let m = probe.measurements();
 
-        // (optional) print values
-        if let Some(w) = &mut writer {
-            let timestamp = unix_timestamp_millis()?;
-            print_measurements(measurements, timestamp, w).context("printing measurements")?;
-            
-            // Flush the write buffer every second
-            if timestamp - previous_timestamp >= 1000 {
-                previous_timestamp = timestamp;
-                w.flush()?;
-            }
-        }
+        // // send the values to the writer task through the channel
+        let timestamp = SystemTime::now();
+        let measurements = m.clone();
 
-        // prevent the compiler from removing the measurement
-        std::hint::black_box(measurements);
+        tx.send(MeasurementsMessage {
+            timestamp,
+            measurements,
+        })
+        .await
+        .expect("failed to send measurement through channel");
     }
 }
 
-fn unix_timestamp_millis() -> anyhow::Result<u128> {
-    let d = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)?;
-    Ok(d.as_millis())
-}
+fn print_measurements(writer: &mut dyn Write, msg: &MeasurementsMessage) -> anyhow::Result<()> {
+    let timestamp_ms = msg.timestamp.duration_since(SystemTime::UNIX_EPOCH)?.as_millis();
 
-fn print_measurements(m: &EnergyMeasurements, timestamp: u128, writer: &mut dyn Write) -> anyhow::Result<()> {
-    for (socket_id, domains_of_socket) in m.per_socket.iter().enumerate() {
+    for (socket_id, domains_of_socket) in msg.measurements.per_socket.iter().enumerate() {
         for (domain, counter) in domains_of_socket {
             if let Some(consumed) = counter.joules {
                 let overflow = counter.overflowed;
-                writer.write(format!("{timestamp};{socket_id};{domain:?};{overflow};{consumed}\n").as_bytes())?;
+                writeln!(writer, "{timestamp_ms};{socket_id};{domain:?};{overflow};{consumed}")?;
             }
         }
     }

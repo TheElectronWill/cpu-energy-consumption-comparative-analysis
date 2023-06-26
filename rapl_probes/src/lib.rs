@@ -74,11 +74,12 @@ pub trait EnergyProbe: Send {
     fn reset(&mut self);
 }
 
+#[derive(Clone, Debug)]
 pub struct EnergyMeasurements {
     pub per_socket: Vec<EnumMap<RaplDomainType, EnergyCounter>>,
 }
 
-#[derive(Default, Clone)]
+#[derive(Default, Clone, Debug)]
 pub struct EnergyCounter {
     /// The previous, raw value of the counter (its range depends on the RAPL probe).
     /// The energy unit has not been applied yet.
