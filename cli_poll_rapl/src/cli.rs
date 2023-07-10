@@ -27,7 +27,7 @@ pub enum Commands {
 
         /// Measurement frequency, in Hertz.
         #[arg(short, long)]
-        frequency: i64,
+        frequency: f64,
 
         /// Print energy measurements on each iteration.
         #[arg(short, long, value_enum)]

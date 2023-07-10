@@ -73,13 +73,14 @@ async fn main() -> Result<(), anyhow::Error> {
         } => {
             // compute the polling period, or stop if zero
             let polling_period = Duration::from_secs_f64({
-                match frequency {
-                    0 => {
-                        info!("Frequency set to zero, stopping here.");
-                        return Ok(());
-                    } // no polling at all, stop here
-                    f if f < 0 => 0.0, // continuous polling
-                    f => 1.0 / f as f64,
+                if frequency == 0.0 {
+                    info!("Frequency set to zero, stopping here.");
+                    return Ok(());
+                } else if frequency < 0.0 {
+                    info!("Negative frequency, which means continuous polling.");
+                    0.0 // continuous polling
+                } else {
+                    1.0 / frequency
                 }
             });
 
