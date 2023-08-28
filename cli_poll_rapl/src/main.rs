@@ -247,20 +247,28 @@ fn check_domains_consistency(perf_events: &[PowerEvent], power_zones: &PowerZone
         warn!("Perf-event: {}", mkstring(&perf_rapl_domains, ", "));
         warn!("Powercap:   {}", mkstring(&powercap_rapl_domains, ", "));
 
-        if rapl_probes::msr::cpu_vendor().unwrap() == RaplVendor::Amd {
-            warn!(
-                "AMD cpus only supports the \"pkg\" domain (and sometimes \"core\"), but their support is buggy on old Linux kernels!
+        match rapl_probes::msr::cpu_vendor() {
+            Ok(RaplVendor::Amd) =>
+                warn!(
+                    "AMD cpus only supports the \"pkg\" domain (and sometimes \"core\"), but their support is buggy on old Linux kernels!
 
-                - All events are present in the sysfs, but they should not be there. This seems to have been fixed in Linux 5.17.
-                See https://github.com/torvalds/linux/commit/0036fb00a756a2f6e360d44e2e3d2200a8afbc9b.
+                    - All events are present in the sysfs, but they should not be there. This seems to have been fixed in Linux 5.17.
+                    See https://github.com/torvalds/linux/commit/0036fb00a756a2f6e360d44e2e3d2200a8afbc9b.
 
-                - The \"core\" domain doesn't work in perf-event, it could be added soon, if it's supported.
-                See https://lore.kernel.org/lkml/20230217161354.129442-1-wyes.karny@amd.com/T/.
+                    - The \"core\" domain doesn't work in perf-event, it could be added soon, if it's supported.
+                    See https://lore.kernel.org/lkml/20230217161354.129442-1-wyes.karny@amd.com/T/.
 
-                NOTE: It could also be totally unsupported, because it gives erroneous/aberrant values in powercap on our bi-socket AMD EPYC 7702 64-core Processor.
-                "
-            );
-        }
+                    NOTE: It could also be totally unsupported, because it gives erroneous/aberrant values in powercap on our bi-socket AMD EPYC 7702 64-core Processor.
+                    "
+                ),
+            Ok(_) => (),
+            Err(e) => 
+                // not dramatic, we can proceed
+                warn!(
+                    "Failed to detect the cpu vendor",
+                    e
+                ),
+        };
     } else {
         info!("Available RAPL domains: {}", mkstring(&perf_rapl_domains, ", "));
     }
