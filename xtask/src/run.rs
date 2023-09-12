@@ -21,7 +21,7 @@ pub struct Options {
     pub run_args: Vec<String>,
 }
 
-const USERSPACE_BIN_NAME: &str = "benchmark";
+const USERSPACE_BIN_NAME: &str = "cli_poll_rapl";
 
 /// Build the project
 fn build(opts: &Options) -> Result<(), anyhow::Error> {
@@ -49,10 +49,13 @@ pub fn run(opts: Options) -> Result<(), anyhow::Error> {
     build(&opts).context(format!(
         "Error while building userspace application '{USERSPACE_BIN_NAME}'"
     ))?;
+    
+    // target we are building
+    let target = "x86_64-unknown-linux-musl";
 
     // profile we are building (release or debug)
     let profile = if opts.release { "release" } else { "debug" };
-    let bin_path = format!("target/{profile}/{USERSPACE_BIN_NAME}");
+    let bin_path = format!("target/{target}/{profile}/{USERSPACE_BIN_NAME}");
 
     // arguments to pass to the application
     let mut run_args: Vec<_> = opts.run_args.iter().map(String::as_str).collect();

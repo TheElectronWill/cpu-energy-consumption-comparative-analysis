@@ -1,0 +1,38 @@
+[package]
+name = "cli_poll_rapl"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+rapl_probes = { path = "../rapl_probes", features = ["ebpf"]}
+
+# Remove debug! logging statements in release move
+log = { version = "0.4", features = ["release_max_level_warn"] }
+
+anyhow = "1"
+clap = "4.2.1"
+env_logger = "0.10"
+regex = "1.7.3"
+tokio = { version = "1.25", features = ["macros", "rt", "rt-multi-thread", "sync"] }
+time = { version = "0.3.21", features = ["formatting"] }
+procfs = "0.15.1"
+
+# Use timerfd to get a high-precision timer (unlike tokio::time::sleep or std::time::sleep)
+tokio-timerfd = "0.2.0"
+futures = "0.3.28"
+
+[dev-dependencies]
+criterion = { version = "0.4", features = ["html_reports", "async_tokio"] }
+
+[[bench]]
+name = "benchmark_probes"
+harness = false
+
+[[bin]]
+name = "cli_poll_rapl"
+path = "src/main.rs"
+
+[features]
+bench_ebpf = []

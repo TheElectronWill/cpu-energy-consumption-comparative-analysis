@@ -5,6 +5,7 @@ edition = "2021"
 publish = false
 
 [dependencies]
+ebpf_common = { path = "../ebpf_common", features = ["user"] }
 aya = { version = ">=0.11", features=["async_tokio"] }
 aya-log = { version = "0.1", optional = true}
 anyhow = "1"

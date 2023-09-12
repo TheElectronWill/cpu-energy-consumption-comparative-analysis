@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 aya-bpf = { git = "https://github.com/aya-rs/aya", branch = "main" }
 aya-log-ebpf = { git = "https://github.com/aya-rs/aya", branch = "main" }
+ebpf_common = { path = "../ebpf_common" }
 
 [[bin]]
 name = "ebpf"
@@ -32,3 +33,4 @@ members = []
 
 [patch."https://github.com/aya-rs/aya"]
 aya-bpf = { path = "../../aya/bpf/aya-bpf" }
+aya-log-ebpf = { path = "../../aya/bpf/aya-log-ebpf" }

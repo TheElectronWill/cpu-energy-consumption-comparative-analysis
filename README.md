@@ -17,14 +17,14 @@ cargo xtask build-ebpf
 To perform a release build you can use the `--release` flag.
 You may also change the target architecture with the `--target` flag.
 
-## Build Userspace
+## Build CLI app
 
 ```bash
-cargo build
+cargo build --bin cli_poll_rapl
 ```
 
 ## Run
 
 ```bash
-RUST_LOG=info cargo xtask run
+RUST_LOG=debug cargo xtask run
 ```

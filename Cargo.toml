@@ -1,6 +1,8 @@
 [workspace]
-members = ["rapl_probes", "xtask", "benchmark"]
+members = ["rapl_probes", "xtask", "cli_poll_rapl"]
 
 [patch.crates-io]
 aya = { path = "../aya/aya" }
 aya-log = { path = "../aya/aya-log" }
+aya-bpf = { path = "../aya/bpf/aya-bpf" }
+aya-log-ebpf = { path = "../aya/bpf/aya-log-ebpf" }

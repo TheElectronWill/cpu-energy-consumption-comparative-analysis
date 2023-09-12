@@ -9,12 +9,15 @@ use aya_bpf::{
     programs::PerfEventContext,
 };
 use aya_log_ebpf::{debug, error};
+use ebpf_common::RaplEnergy;
 
 /// Input map (single value): the number of perf events for each socket
 #[map]
-static mut N_EVENTS: Array<i8> = Array::with_max_entries(1, 0);
+static mut N_EVENTS: Array<u8> = Array::with_max_entries(1, 0);
 
-/// Input map: the file descriptors of the RAPL perf events.
+/// Input maps: the file descriptors of the RAPL perf events.
+/// There is one map for all the RAPL domains.
+///
 /// For each CPU socket, the first monitored event is at the index of the socket's first CPU.
 /// Example with 2 sockets and 2 events:
 /// ```txt
@@ -26,65 +29,89 @@ static mut N_EVENTS: Array<i8> = Array::with_max_entries(1, 0);
 #[map]
 static mut DESCRIPTORS: PerfEventArray<i32> = PerfEventArray::with_max_entries(128, 0);
 
-/// Output map: the event data (i.e. the values of the RAPL counters)
+/// Output map: the event data (i.e. the values of the RAPL counters).
+///
+/// ## Note
+/// We CANNOT output the values at any index, we can only output values at the index equal to the current cpu.
+/// Reading the perf events from DESCRIPTORS works fine, but bpf_perf_event_output doesn't work.
+/// See https://github.com/iovisor/bcc/issues/2857#issuecomment-608368322
+///
 #[map]
-static mut EVENTS: PerfEventArray<u64> = PerfEventArray::with_max_entries(128, 0);
+static mut EVENTS: PerfEventArray<RaplEnergy> = PerfEventArray::with_max_entries(128, 0);
 
 #[perf_event]
 pub fn aya_start(ctx: PerfEventContext) -> i32 {
     match try_aya_start(&ctx) {
-        Ok(ret) => ret,
-        Err(ret) => {
-            error!(&ctx, "ebpf program failed with error {}", ret);
+        Ok(()) => 0,
+        Err((msg, ret)) => {
+            error!(&ctx, "ebpf program failed with error {}: {}", ret, msg);
             1
         }
     }
 }
 
-fn try_aya_start(ctx: &PerfEventContext) -> Result<i32, i64> {
-    let cpu = unsafe { bpf_get_smp_processor_id() };
+fn read_and_push_counter(ctx: &PerfEventContext, cpu_id: u32, domain_id: u8) -> Result<(), (&str, i64)> {
+    // read the RAPL energy counter from the file descriptor at the given index
+    let read_index = cpu_id + domain_id as u32;
+    let value = unsafe { DESCRIPTORS.read_at_index(read_index) }.map_err(|e| ("read", e))?;
+    let energy = value.counter;
+    
+    #[cfg(debug_assertions)] // remove the line in release mode
+    debug!(ctx, "got value {} from fd DESCRIPTORS[{}]", energy, read_index);
+
+    // push the value to userspace (this internally calls bpf_perf_event_output)
+    let write_index = cpu_id; // we can only output at the index of the current cpu
+    let data = RaplEnergy {
+        cpu_id,
+        domain_id,
+        energy,
+    };
+    unsafe { EVENTS.output_at_index(ctx, &data, write_index) }.map_err(|e| ("output", e))?;
+
+    Ok(())
+}
+
+fn try_aya_start(ctx: &PerfEventContext) -> Result<(), (&str, i64)> {
+    let cpu_id = unsafe { bpf_get_smp_processor_id() };
 
     // loops aren't available in EBPF before Linux Kernel 5.3, and we have HPC servers running on 4.8
     // For brevity, only the common cases used in our benchmarks are implemented.
-    let n = unsafe { N_EVENTS.get(0) }.ok_or(-6)?;
-    match n {
-        1 => {
-            // only one event
-            read_and_push_counter(ctx, cpu)?;
-        }
-        2 => {
-            // all RAPL events available on AMD processors
-            read_and_push_counter(ctx, cpu)?;
-            read_and_push_counter(ctx, cpu + 1)?;
-        }
-        5 => {
-            // all RAPL events available on recent Intel processors
-            read_and_push_counter(ctx, cpu)?;
-            read_and_push_counter(ctx, cpu + 1)?;
-            read_and_push_counter(ctx, cpu + 2)?;
-            read_and_push_counter(ctx, cpu + 3)?;
-            read_and_push_counter(ctx, cpu + 4)?;
-        }
-        _ => {
-            // unsupported
-            return Err(-7);
-        }
-    };
 
-    Ok(0)
-}
-
-fn read_and_push_counter(ctx: &PerfEventContext, index: u32) -> Result<i32, i64> {
-    // read PMU data from file descriptor in the array, by cpu id
-    let value = unsafe { DESCRIPTORS.read_at_index(index)? };
+    let n = unsafe { N_EVENTS.get(0) }.ok_or(("N_EVENTS not set", -1))?;
 
     #[cfg(debug_assertions)]
-    debug!(ctx, "got value {} at index {}", value.counter, index);
+    debug!(ctx, "N_EVENTS = {}", *n);
 
-    // push the update to userspace, using bpf_perf_event_output (wrapped)
-    unsafe { EVENTS.output_at_index(ctx, &value.counter, index) };
+    match n {
+        1 => read_and_push_counter(ctx, cpu_id, 0)?,
+        2 => {
+            read_and_push_counter(ctx, cpu_id, 0)?;
+            read_and_push_counter(ctx, cpu_id, 1)?;
+        }
+        3 => {
+            read_and_push_counter(ctx, cpu_id, 0)?;
+            read_and_push_counter(ctx, cpu_id, 1)?;
+            read_and_push_counter(ctx, cpu_id, 2)?;
+        }
+        4 => {
+            read_and_push_counter(ctx, cpu_id, 0)?;
+            read_and_push_counter(ctx, cpu_id, 1)?;
+            read_and_push_counter(ctx, cpu_id, 2)?;
+            read_and_push_counter(ctx, cpu_id, 3)?;
+        }
+        5 => {
+            read_and_push_counter(ctx, cpu_id, 0)?;
+            read_and_push_counter(ctx, cpu_id, 1)?;
+            read_and_push_counter(ctx, cpu_id, 2)?;
+            read_and_push_counter(ctx, cpu_id, 3)?;
+            read_and_push_counter(ctx, cpu_id, 4)?;
+        }
+        _ => {
+            return Err(("invalid N_EVENTS, should be in 1..=5", -7));
+        }
+    }
 
-    Ok(0)
+    Ok(())
 }
 
 /// Makes the compiler happy, but is never used (eBPF programs cannot panic).
