@@ -265,7 +265,7 @@ fn check_domains_consistency(perf_events: &[PowerEvent], power_zones: &PowerZone
             Err(e) => 
                 // not dramatic, we can proceed
                 warn!(
-                    "Failed to detect the cpu vendor",
+                    "Failed to detect the cpu vendor. {}",
                     e
                 ),
         };
