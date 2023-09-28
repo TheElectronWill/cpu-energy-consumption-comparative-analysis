@@ -1,27 +1,26 @@
 use rapl_probes::perf_event::PowerEvent;
 use rapl_probes::powercap::{PowerZone, PowerZoneHierarchy};
 
-use anyhow::{anyhow, Context};
+use anyhow::anyhow;
 use clap::Parser;
 use std::fs::File;
 use std::io::{BufWriter, Write};
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
-
-use futures::stream::StreamExt;
-use tokio::sync::mpsc::{self, Sender};
-use tokio_timerfd::Interval;
 
 use cli::{Cli, Commands, OutputType, ProbeType};
 use log::{info, warn};
 use rapl_probes::{
     ebpf,
     msr::{self, RaplVendor},
-    perf_event, powercap, EnergyMeasurements, EnergyProbe, RaplDomainType,
+    perf_event, powercap, EnergyProbe, RaplDomainType,
 };
 
 mod cli;
+mod main_optimized;
+#[cfg(any(feature = "bad_sleep", feature = "bad_sleep_singlethread"))]
+mod main_bad;
 
 const MEASUREMENTS_FLUSH_INTERVAL: Duration = Duration::from_secs(1);
 const WRITER_BUFFER_CAPACITY: usize = 8192 * 10;
@@ -100,7 +99,7 @@ async fn main() -> Result<(), anyhow::Error> {
                 .collect();
 
             // create the RAPL probe
-            let mut probe: Box<dyn EnergyProbe> = match probe {
+            let probe: Box<dyn EnergyProbe> = match probe {
                 ProbeType::PowercapSysfs => {
                     let p = powercap::PowercapProbe::<true>::new(&socket_cpus, &filtered_zones)?;
                     Box::new(p)
@@ -120,7 +119,7 @@ async fn main() -> Result<(), anyhow::Error> {
             };
 
             // prepare the output, if any
-            let mut writer: Box<dyn Write + Send> = match output {
+            let writer: Box<dyn Write + Send> = match output {
                 OutputType::None => Box::new(std::io::sink()),
                 OutputType::Stdout => Box::new(BufWriter::with_capacity(WRITER_BUFFER_CAPACITY, std::io::stdout())),
                 OutputType::File => {
@@ -138,95 +137,17 @@ async fn main() -> Result<(), anyhow::Error> {
                 }
             };
 
-            // open a Channel to write to the output in another thread
-            let (tx, mut rx) = mpsc::channel::<MeasurementsMessage>(4096);
+            #[cfg(not(any(feature = "bad_sleep", feature = "bad_sleep_singlethread")))]
+            main_optimized::run(writer, probe, polling_period, MEASUREMENTS_FLUSH_INTERVAL).await?;
 
-            // Start the writer task, which will receive the data from the channel and write
-            // it to the selected output.
-            let handle = tokio::spawn(async move {
-                let mut previous_timestamp: SystemTime = SystemTime::now();
+            #[cfg(feature = "bad_sleep")]
+            main_bad::run_bad_sleep(writer, probe, polling_period, MEASUREMENTS_FLUSH_INTERVAL).await?;
 
-                // write the csv header
-                writer.write("timestamp_ms;socket;domain;overflow;joules\n".as_bytes())?;
-
-                while let Some(msg) = rx.recv().await {
-                    print_measurements(&mut writer, &msg)?;
-
-                    let time_since_last_flush = msg
-                        .timestamp
-                        .duration_since(previous_timestamp)
-                        .unwrap_or(Duration::ZERO);
-
-                    if time_since_last_flush >= MEASUREMENTS_FLUSH_INTERVAL {
-                        previous_timestamp = msg.timestamp;
-                        writer.flush()?;
-                    }
-                }
-
-                anyhow::Ok(())
-            });
-
-            // Start the polling task, which will poll the RAPL counters at regular intervals
-            // and send the data to the writer task, through the channel.
-            poll_energy_probe(probe.as_mut(), polling_period, tx)
-                .await
-                .expect("probe error");
-
-            handle.await?.expect("writer task error");
+            #[cfg(feature = "bad_sleep_singlethread")]
+            main_bad::run_bad_sleep_singlethread(writer, probe, polling_period, MEASUREMENTS_FLUSH_INTERVAL)?;
         }
     }
 
-    Ok(())
-}
-
-#[derive(Debug)]
-struct MeasurementsMessage {
-    timestamp: SystemTime,
-    measurements: EnergyMeasurements,
-}
-
-async fn poll_energy_probe(
-    probe: &mut dyn EnergyProbe,
-    period: Duration,
-    tx: Sender<MeasurementsMessage>,
-) -> anyhow::Result<()> {
-    // Underneath, this uses a periodic timer from timerfd, which has a higher resolution than std::time::sleep and tokio::time::sleep
-    // Also, using an interval is better than using a `Delay` by hand
-    // (for 1000Hz, we get close to 999Hz with the Interval but only around 860Hz with the Delay).
-    let mut interval = Interval::new_interval(period)?;
-
-    loop {
-        // wait for the next tick of the periodic timer
-        interval.next().await;
-
-        // poll the new values from the probe
-        probe.poll().context("refreshing measurements")?;
-        let m = probe.measurements();
-
-        // // send the values to the writer task through the channel
-        let timestamp = SystemTime::now();
-        let measurements = m.clone();
-
-        tx.send(MeasurementsMessage {
-            timestamp,
-            measurements,
-        })
-        .await
-        .expect("failed to send measurement through channel");
-    }
-}
-
-fn print_measurements(writer: &mut dyn Write, msg: &MeasurementsMessage) -> anyhow::Result<()> {
-    let timestamp_ms = msg.timestamp.duration_since(SystemTime::UNIX_EPOCH)?.as_millis();
-
-    for (socket_id, domains_of_socket) in msg.measurements.per_socket.iter().enumerate() {
-        for (domain, counter) in domains_of_socket {
-            if let Some(consumed) = counter.joules {
-                let overflow = counter.overflowed;
-                writeln!(writer, "{timestamp_ms};{socket_id};{domain:?};{overflow};{consumed}")?;
-            }
-        }
-    }
     Ok(())
 }
 
@@ -262,7 +183,7 @@ fn check_domains_consistency(perf_events: &[PowerEvent], power_zones: &PowerZone
                     "
                 ),
             Ok(_) => (),
-            Err(e) => 
+            Err(e) =>
                 // not dramatic, we can proceed
                 warn!(
                     "Failed to detect the cpu vendor. {}",
@@ -284,3 +205,6 @@ fn check_domains_consistency(perf_events: &[PowerEvent], power_zones: &PowerZone
 fn mkstring<A: ToString>(elems: &[A], sep: &str) -> String {
     elems.iter().map(|e| e.to_string()).collect::<Vec<_>>().join(sep)
 }
+
+#[cfg(all(feature = "bad_sleep", feature = "bad_sleep_singlethread"))]
+compile_error!("features \"bad_sleep\" and \"bad_sleep_singlethread\" cannot be enabled at the same time");
