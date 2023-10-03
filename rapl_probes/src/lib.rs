@@ -2,7 +2,7 @@ use std::{collections::HashSet, fmt, fs, num::ParseIntError, str::FromStr};
 
 use enum_map::{self, EnumMap};
 
-#[cfg(feature = "ebpf")]
+#[cfg(feature = "enable_ebpf")]
 pub mod ebpf;
 
 pub mod msr;

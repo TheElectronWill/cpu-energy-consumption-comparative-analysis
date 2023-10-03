@@ -6,7 +6,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-rapl_probes = { path = "../rapl_probes", features = ["ebpf"]}
+rapl_probes = { path = "../rapl_probes"}
 
 # Remove debug! logging statements in release move
 log = { version = "0.4", features = ["release_max_level_warn"] }
@@ -45,6 +45,7 @@ path = "src/main.rs"
 required-features = ["bad_sleep_singlethread"]
 
 [features]
-bench_ebpf = []
+enable_ebpf = [ "rapl_probes/enable_ebpf" ]
+bench_ebpf = [ "enable_ebpf" ]
 bad_sleep = []
 bad_sleep_singlethread = []

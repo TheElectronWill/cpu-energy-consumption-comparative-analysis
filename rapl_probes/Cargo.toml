@@ -5,8 +5,8 @@ edition = "2021"
 publish = false
 
 [dependencies]
-ebpf_common = { path = "../ebpf_common", features = ["user"] }
-aya = { version = ">=0.11", features=["async_tokio"] }
+ebpf_common = { path = "../ebpf_common", features = ["user"], optional = true}
+aya = { version = ">=0.11", features=["async_tokio"], optional = true}
 aya-log = { version = "0.1", optional = true}
 anyhow = "1"
 perf-event-open-sys = "4.0.0"
@@ -20,4 +20,4 @@ log = { version = "0.4", features = ["release_max_level_warn"] }
 bytes = "1.4.0"
 
 [features]
-ebpf = ["aya-log"]
+enable_ebpf = ["aya", "aya-log", "ebpf_common"]

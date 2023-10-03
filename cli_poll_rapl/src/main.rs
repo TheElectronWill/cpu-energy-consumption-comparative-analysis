@@ -11,8 +11,9 @@ use time::OffsetDateTime;
 
 use cli::{Cli, Commands, OutputType, ProbeType};
 use log::{info, warn};
+#[cfg(feature = "enable_ebpf")]
+use rapl_probes::ebpf;
 use rapl_probes::{
-    ebpf,
     msr::{self, RaplVendor},
     perf_event, powercap, EnergyProbe, RaplDomainType,
 };
@@ -109,8 +110,15 @@ async fn main() -> Result<(), anyhow::Error> {
                     Box::new(p)
                 }
                 ProbeType::Ebpf => {
+                    #[cfg(feature = "enable_ebpf")]
+                    {
                     let p = ebpf::EbpfProbe::new(&socket_cpus, &filtered_events, frequency as u64)?;
                     Box::new(p)
+                    }
+                    #[cfg(not(feature = "enable_ebpf"))]
+                    {
+                        panic!("Invalid probe type 'ebpf': the ebpf feature has not been enabled during the compilation of the tool. Recompile with `--features enable_ebpf` to enable.")
+                    }
                 }
                 ProbeType::Msr => {
                     let p = msr::MsrProbe::new(&socket_cpus, &domains)?;
