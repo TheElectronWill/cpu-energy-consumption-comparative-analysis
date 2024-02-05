@@ -1,8 +1,12 @@
 [workspace]
 members = ["rapl_probes", "xtask", "cli_poll_rapl"]
 
-[patch.crates-io]
-aya = { path = "../aya/aya" }
-aya-log = { path = "../aya/aya-log" }
-aya-bpf = { path = "../aya/bpf/aya-bpf" }
-aya-log-ebpf = { path = "../aya/bpf/aya-log-ebpf" }
+# To use the ebpf probes (see ebpf_common/README.md):
+# 1. clone https://github.com/TheElectronWill/aya/commit/0aeb379bebde2a7c1b87ec8e0e66713a877daef0 in the directory ../aya (relative to the directory of this project)
+# 2. uncomment the following lines
+# 3. build ebpf program with `xtask` and recompile with the `enable_ebpf` feature flag
+# [patch.crates-io]
+# aya = { path = "../aya/aya" }
+# aya-log = { path = "../aya/aya-log" }
+# aya-bpf = { path = "../aya/bpf/aya-bpf" }
+# aya-log-ebpf = { path = "../aya/bpf/aya-log-ebpf" }

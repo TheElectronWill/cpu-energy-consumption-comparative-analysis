@@ -7,6 +7,8 @@ use aya_log::BpfLogger;
 
 use bytes::BytesMut;
 use log::{debug, warn};
+use std::os::fd::OwnedFd;
+use std::os::fd::FromRawFd;
 
 use ebpf_common::RaplEnergy;
 use crate::{perf_event, EnergyMeasurements};
@@ -173,8 +175,9 @@ fn prepare_ebpf_probe(socket_cpus: &[CpuId], events: &[&PowerEvent], freq_hz: u6
             for (i, event) in events.iter().enumerate() {
                 let cpu_id = cpu_info.cpu;
                 let fd = event.perf_event_open(pmu_type, cpu_id)?;
+                let fd = unsafe{OwnedFd::from_raw_fd(fd)};
                 let index = cpu_id + i as u32;
-                fd_array.set(index, fd)?;
+                fd_array.set(index, &fd)?;
                 debug!("DESCRIPTORS[{index}] = {fd:?}");
             }
         }

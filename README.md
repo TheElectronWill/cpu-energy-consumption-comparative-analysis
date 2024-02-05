@@ -1,30 +1,32 @@
-# Read ebpf RAPL values from Rust
+# Minimal RAPL-based measurement tool in Rust
 
-Inspired from the C version, see [this commit in the Linux kernel repository](https://github.com/torvalds/linux/commit/d74a790d5237e7f56677030d932bc4f37ec36c92#diff-7f8cb9786a9d6a03f0164b2a9c2b942ab954866edc616a700c8884333d52a672) and [the description of the feature](https://lwn.net/Articles/651461/).
+This is a minimal tool that measures the energy consumption of a CPU, on Linux, through all possible RAPL interfaces.
 
-## Prerequisites
+Research paper: *Dissecting the software-based measurement of CPU energy consumption: a comparative analysis*, Guillaume Raffin and Denis Trystram  
+- [HAL link (preprint)](https://hal.science/hal-04420527)
+- Journal link (coming soon)
 
-1. Install a rust stable toolchain: `rustup install stable`
-1. Install a rust nightly toolchain with the rust-src component: `rustup toolchain install nightly --component rust-src`
-1. Install bpf-linker: `cargo install bpf-linker`
+## How to use
 
-## Build eBPF
-
-```bash
-cargo xtask build-ebpf
+First, [install Rust](https://rustup.rs/).  
+Make sure that you have the `x86_64-unknown-linux-musl` toolchain installed:
+```sh
+rustup target add x86_64-unknown-linux-musl
 ```
 
-To perform a release build you can use the `--release` flag.
-You may also change the target architecture with the `--target` flag.
-
-## Build CLI app
-
-```bash
-cargo build --bin cli_poll_rapl
+Then, **compile the project**:
+```sh
+cargo build --release
 ```
 
-## Run
-
-```bash
-RUST_LOG=debug cargo xtask run
+Finally, run the tool with the appropriate privileges (the easiest way to do that is to run it as root):
+```sh
+sudo -E ./target/x86_64-unknown-linux-musl/release/cli_poll_rapl poll powercap --domains pkg --frequency 1 --output stdout
 ```
+
+You can use `--help` to learn about the possible options.
+
+## How to use eBPF
+
+By default, the eBPF implementation is disabled (not compiled, not included in the tool) because it requires additional system and crate dependencies.
+To enable it, see [ebpf_common/README.md](ebpf_common/README.md).
