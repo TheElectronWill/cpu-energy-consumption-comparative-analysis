@@ -2,9 +2,11 @@
 
 This is a minimal tool that measures the energy consumption of a CPU, on Linux, through all possible RAPL interfaces.
 
-Research paper: *Dissecting the software-based measurement of CPU energy consumption: a comparative analysis*, Guillaume Raffin and Denis Trystram  
+Research paper: *Dissecting the software-based measurement of CPU energy consumption: a comparative analysis*, Guillaume Raffin and Denis Trystram.  
 - [HAL link (preprint)](https://hal.science/hal-04420527)
 - Journal link (coming soon)
+
+Licensed under the EUPL 1.2 or later.
 
 ## How to use
 
@@ -29,4 +31,4 @@ You can use `--help` to learn about the possible options.
 ## How to use eBPF
 
 By default, the eBPF implementation is disabled (not compiled, not included in the tool) because it requires additional system and crate dependencies.
-To enable it, see [ebpf_common/README.md](ebpf_common/README.md).
+To enable it as we did for the paper, see [ebpf_common/README.md](ebpf_common/README.md).
