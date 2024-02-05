@@ -6,7 +6,7 @@ Research paper: *Dissecting the software-based measurement of CPU energy consump
 - [HAL link (preprint)](https://hal.science/hal-04420527)
 - Journal link (coming soon)
 
-Licensed under the EUPL 1.2 or later.
+Licensed under the EUPL 1.2 or later (The EUPL is compatible with many other licences, including GPL and LGPL, don't hesitate to contact us by mail if you have concerns about it).
 
 ## How to use
 
