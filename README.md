@@ -2,8 +2,10 @@
 
 This is a minimal tool that measures the energy consumption of a CPU, on Linux, through all possible RAPL interfaces.
 
-Research paper: *Dissecting the software-based measurement of CPU energy consumption: a comparative analysis*, Guillaume Raffin and Denis Trystram.  
-- [HAL link (preprint)](https://hal.science/hal-04420527)
+Research paper: *Dissecting the software-based measurement of CPU energy consumption: a comparative analysis*, Guillaume Raffin and Denis Trystram. 
+
+In this paper, we provide an in-depth analysis of the different ways of accessing RAPL measurements, demonstrate an efficient way of implementing them, and offer recommendations based on qualitative and quantitative criterias.
+- [ArXiv link](https://doi.org/10.48550/arXiv.2401.15985), [HAL link](https://hal.science/hal-04420527) (preprint)
 - Journal link (coming soon)
 
 Licensed under the EUPL 1.2 or later (The EUPL is compatible with many other licences, including GPL and LGPL, don't hesitate to contact us by mail if you have concerns about it).
