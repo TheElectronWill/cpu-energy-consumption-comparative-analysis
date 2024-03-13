@@ -4,7 +4,7 @@ This is a minimal tool that measures the energy consumption of a CPU, on Linux, 
 
 Research paper: *Dissecting the software-based measurement of CPU energy consumption: a comparative analysis*, Guillaume Raffin and Denis Trystram. 
 
-In this paper, we provide an in-depth analysis of the different ways of accessing RAPL measurements, demonstrate an efficient way of implementing them, and offer recommendations based on qualitative and quantitative criterias.
+In this paper, we provide an in-depth analysis of the different ways of accessing RAPL measurements, demonstrate an efficient way of implementing them, and offer recommendations based on qualitative and quantitative criterias. Applications include: energy profiling, HPC energy monitoring with minimal performance overhead and maximal frequency (around 1000 Hz), etc.
 - [ArXiv link](https://doi.org/10.48550/arXiv.2401.15985), [HAL link](https://hal.science/hal-04420527) (preprint)
 - Journal link (coming soon)
 
