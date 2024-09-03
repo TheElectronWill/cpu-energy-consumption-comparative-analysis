@@ -13,6 +13,7 @@ Licensed under the EUPL 1.2 or later (The EUPL is compatible with many other lic
 ## Wait, there is more!
 
 Hey! If you like this project, please check out the next episode here: [Alumet, a customizable and efficient tool for measuring energy consumption on HPC and Edge devices](https://github.com/alumet-dev/alumet).
+Now, let's go back to the minimal tool related to the aforementioned paper.
 
 ## How to use
 
