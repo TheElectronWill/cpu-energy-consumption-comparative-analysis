@@ -10,6 +10,10 @@ In this paper, we provide an in-depth analysis of the different ways of accessin
 
 Licensed under the EUPL 1.2 or later (The EUPL is compatible with many other licences, including GPL and LGPL, don't hesitate to contact us by mail if you have concerns about it).
 
+## Wait, there is more!
+
+Hey! If you like this project, please check out the next episode here: [Alumet, a customizable and efficient tool for measuring energy consumption on HPC and Edge devices](https://github.com/alumet-dev/alumet).
+
 ## How to use
 
 First, [install Rust](https://rustup.rs/).  
