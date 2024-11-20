@@ -1,4 +1,5 @@
 [workspace]
+resolver = "2"
 members = ["rapl_probes", "xtask", "cli_poll_rapl"]
 
 # To use the ebpf probes (see ebpf_common/README.md):
@@ -10,3 +11,7 @@ members = ["rapl_probes", "xtask", "cli_poll_rapl"]
 # aya-log = { path = "../aya/aya-log" }
 # aya-bpf = { path = "../aya/bpf/aya-bpf" }
 # aya-log-ebpf = { path = "../aya/bpf/aya-log-ebpf" }
+
+[profile.release]
+codegen-units = 1
+lto = "fat"
